@@ -1,25 +1,20 @@
-import pdfplumber
-
-def extract_transactions(file_bytes):
+def extract_transactions(upload_file):
     transactions = []
-
-    with pdfplumber.open(file_bytes) as pdf:
+    with pdfplumber.open(upload_file.file) as pdf:
         for page in pdf.pages:
             table = page.extract_table()
-            if not table:
-                continue
-
-            for row in table[1:]:  # skip header
-                if row and len(row) >= 3:
-                    date, vendor, amount = row[:3]
-                    try:
-                        clean_amount = float(amount.replace("$", "").replace(",", ""))
+            if table:
+                for row in table[1:]:  # skip header row
+                    if len(row) >= 2:
+                        date, vendor = row[0], row[1]
+                        amount = row[-1].replace("$", "").replace(",", "").strip()
+                        try:
+                            amount = float(amount)
+                        except ValueError:
+                            amount = 0.0
                         transactions.append({
-                            "date": date.strip(),
-                            "vendor": vendor.strip(),
-                            "amount": clean_amount
+                            "date": date,
+                            "vendor": vendor,
+                            "amount": amount
                         })
-                    except Exception:
-                        continue
-
     return transactions
