@@ -5,7 +5,11 @@ import re
 
 def extract_transactions(file_bytes):
     transactions = []
-    line_pattern = re.compile(r"^\d{2}/\d{2}/\d{2,4}\s+.*?\s+[-+]?\$?\d[\d,]*\.?\d{0,2}$")
+    metadata = {
+        "bank": "Unknown",
+        "account_suffix": "",
+        "source": "Unknown"
+    }
 
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         for page in pdf.pages:
@@ -13,10 +17,16 @@ def extract_transactions(file_bytes):
             if not text:
                 continue
 
+            # Extract metadata once (bank name + last 4)
+            if metadata["source"] == "Unknown":
+                metadata = extract_metadata(text)
+
+            line_pattern = re.compile(r"^\d{2}/\d{2}/\d{2,4}\s+.*?\s+[-+]?\$?\d[\d,]*\.?\d{0,2}$")
             lines = text.split('\n')
+
             for line in lines:
                 line = line.strip()
-                if is_valid_transaction_line(line, line_pattern):
+                if line_pattern.match(line):
                     parts = line.split()
                     try:
                         date = parts[0]
@@ -25,12 +35,21 @@ def extract_transactions(file_bytes):
                         transactions.append({
                             "date": date,
                             "memo": memo,
-                            "amount": amount
+                            "amount": amount,
+                            "source": metadata["source"]
                         })
-                    except Exception:
+                    except:
                         continue
 
     return transactions
 
-def is_valid_transaction_line(line, pattern):
-    return pattern.match(line)
+def extract_metadata(text):
+    bank = "American Express" if "American Express" in text else "Unknown"
+    match = re.search(r"Account Ending (\d{4,5})", text)
+    account_suffix = match.group(1) if match else ""
+    label = f"{bank} {account_suffix}" if bank != "Unknown" and account_suffix else "Unknown"
+    return {
+        "bank": bank,
+        "account_suffix": account_suffix,
+        "source": label
+    }
