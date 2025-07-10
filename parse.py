@@ -48,10 +48,12 @@ def extract_transactions(file_bytes):
 def extract_metadata(text):
     bank = "American Express" if "American Express" in text or "AMEX" in text else "Unknown"
 
-    # Try to match formats like: Account Ending 1005, Card Ending 1005, XXXX1005, or just 1005
-    match = re.search(r"(?:Account (?:Ending|Number)?|Card Ending|XXXX)[^\d]{0,5}(\d{4,5})", text, re.IGNORECASE)
+    # Match patterns like "Account Ending 2-61005" and extract only the last 4–5 digits
+    match = re.search(r"Account Ending\s+[\w\-]*?(\d{4,5})", text, re.IGNORECASE)
+
+    # Fallback: find any 4-5 digit standalone number (risky but better than empty)
     if not match:
-        match = re.search(r"\b(\d{4,5})\b", text)  # fallback: standalone 4-5 digit number
+        match = re.search(r"\b(\d{4,5})\b", text)
 
     account_suffix = match.group(1) if match else ""
     label = f"{bank} {account_suffix}" if bank != "Unknown" and account_suffix else "Unknown"
