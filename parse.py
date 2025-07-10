@@ -52,10 +52,11 @@ def extract_metadata(text):
 
     for line in text.splitlines():
         if "Account Ending" in line:
-            # Find all digit groups; take the last one (most likely account number)
-            match = re.findall(r"\d{4,5}", line)
+            # Remove symbols like dashes to isolate digits
+            cleaned = re.sub(r"[^\d\s]", " ", line)
+            match = re.findall(r"\d{4,5}", cleaned)
             if match:
-                account_suffix = match[-1]
+                account_suffix = match[-1]  # use the last digit group
                 break
 
     label = f"{bank} {account_suffix}" if bank != "Unknown" and account_suffix else "Unknown"
