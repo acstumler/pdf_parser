@@ -1,4 +1,5 @@
 # pdf_parser/parse.py
+
 import pdfplumber
 import io
 import re
@@ -17,7 +18,7 @@ def extract_transactions(file_bytes):
             if not text:
                 continue
 
-            # Try to detect account/bank source from first 3 pages
+            # Attempt metadata extraction from first 3 pages
             if metadata["source"] == "Unknown" and i < 3:
                 metadata = extract_metadata(text)
                 print(f"[DEBUG] Extracted metadata from page {i+1}:", metadata)
@@ -47,15 +48,14 @@ def extract_transactions(file_bytes):
 
 def extract_metadata(text):
     bank = "American Express" if "American Express" in text or "AMEX" in text else "Unknown"
-
-    # Only extract from lines containing "Account Ending"
     account_suffix = ""
+
     for line in text.splitlines():
         if "Account Ending" in line:
-            # Match formats like "Account Ending 2-61005" or "Account Ending XXXX61005"
-            match = re.search(r"Account Ending[^\d]*(\d{4,5})", line)
+            # Find all digit groups; take the last one (most likely account number)
+            match = re.findall(r"\d{4,5}", line)
             if match:
-                account_suffix = match.group(1)
+                account_suffix = match[-1]
                 break
 
     label = f"{bank} {account_suffix}" if bank != "Unknown" and account_suffix else "Unknown"
