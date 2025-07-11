@@ -1,5 +1,4 @@
-# pdf_parser/main.py
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from parse import extract_transactions
 
@@ -13,8 +12,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.post("/parse-pdf")
-async def parse_pdf(file: UploadFile = File(...)):
+@app.post("/parse")
+async def parse(file: UploadFile = File(...)):
     contents = await file.read()
     transactions = extract_transactions(contents)
-    return { "transactions": transactions }
+    return {"transactions": transactions}
