@@ -2,43 +2,47 @@ import io
 import pdfplumber
 import re
 
-SOURCE_REGEX = re.compile(r'Account Ending(?: in)? (\d{4,6})', re.IGNORECASE)
+# Detect section headers like "Payments", "New Charges", etc.
 SECTION_HEADERS = ['Payments', 'Credits', 'New Charges', 'Other Fees', 'Interest Charged']
+SOURCE_REGEX = re.compile(r'Account Ending(?:\s+in)?\s+(\d{4,6})', re.IGNORECASE)
 
-def extract_raw_lines(pdf_bytes):
-    raw_data = []
-    current_section = None
+def extract_pdf_lines(pdf_bytes):
+    pages_data = []
     current_source = None
+    current_section = None
 
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page_num, page in enumerate(pdf.pages, start=1):
+            page_data = {
+                "page": page_num,
+                "lines": [],
+                "source": current_source,
+                "section": None
+            }
+
             text = page.extract_text()
             if not text:
                 continue
 
-            page_lines = []
             lines = text.split('\n')
             for line in lines:
-                line = line.strip()
+                stripped = line.strip()
 
-                # Detect source account
+                # Try to capture account source (e.g. "Account Ending in 61005")
                 if not current_source:
-                    match = SOURCE_REGEX.search(line)
+                    match = SOURCE_REGEX.search(stripped)
                     if match:
                         current_source = f"American Express {match.group(1)}"
+                        page_data["source"] = current_source
 
-                # Detect section
-                if any(header in line for header in SECTION_HEADERS):
-                    current_section = next((h for h in SECTION_HEADERS if h in line), current_section)
-                    continue
+                # Update section header if found
+                if any(h in stripped for h in SECTION_HEADERS):
+                    current_section = next((h for h in SECTION_HEADERS if h in stripped), current_section)
 
-                page_lines.append(line)
+                # Add line to page output
+                page_data["lines"].append(stripped)
 
-            raw_data.append({
-                "page": page_num,
-                "lines": page_lines,
-                "source": current_source or "",
-                "section": current_section or ""
-            })
+            page_data["section"] = current_section
+            pages_data.append(page_data)
 
-    return raw_data
+    return pages_data
