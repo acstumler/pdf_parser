@@ -10,21 +10,31 @@ AMOUNT_REGEX = re.compile(r'[-]?\$?[\d,]+\.\d{2}')
 BLOCKLIST_PHRASES = [
     "late fee", "due date", "payment due", "total interest charged",
     "total fees charged", "credit limit", "statement balance",
-    "minimum payment", "closing date", "ending balance"
+    "minimum payment", "closing date", "ending balance", "past due"
+]
+
+# List of vendor-like keywords that *must* be present for valid transactions
+VENDOR_KEYWORDS = [
+    "payment", "purchase", "restaurant", "store", "apple",
+    "paypal", "venmo", "uber", "auto", "liquors", "grill",
+    "hotel", "subway", "walgreens", "interest charge", "transaction",
+    "chipotle", "market", "fuel", "circle k", "amazon", "food",
+    "delivery", "shell", "service", "qsr", "target", "kroger",
+    "dining", "fast food", "grocery", "cash app"
 ]
 
 def is_probably_transaction(line: str) -> bool:
-    lower_line = line.lower()
+    lower = line.lower()
 
-    # Exclude any line containing blocklisted phrases
-    if any(phrase in lower_line for phrase in BLOCKLIST_PHRASES):
+    # Exclude known garbage lines
+    if any(phrase in lower for phrase in BLOCKLIST_PHRASES):
         return False
 
-    # Require some text (not just numbers)
-    if not re.search(r'[a-zA-Z]{3,}', line):
-        return False
+    # Only allow lines with vendor-related words
+    if any(keyword in lower for keyword in VENDOR_KEYWORDS):
+        return True
 
-    return True
+    return False
 
 def clean_memo(raw_memo: str) -> str:
     memo = raw_memo.strip()
@@ -39,7 +49,7 @@ def clean_memo(raw_memo: str) -> str:
     # Remove common location terms
     memo = re.sub(r'\b(LOUISVILLE|HUNT VALLEY|NEW YORK|KY|MD|CA|TN|TX|OH|IN)\b', '', memo, flags=re.IGNORECASE)
 
-    # Normalize common vendor formats
+    # Normalize vendor naming
     memo = memo.replace("APPLE.COM/BILL", "Apple")
     memo = memo.replace("PAYPAL", "PayPal")
     memo = memo.replace("VENMO", "Venmo")
@@ -54,16 +64,17 @@ def extract_transactions(raw_pages, learned_memory):
 
     for page in raw_pages:
         for line in page["lines"]:
-            # Date and amount must be present
+            # Must contain a valid date and amount
             date_match = DATE_REGEX.search(line)
             amount_match = AMOUNT_REGEX.search(line)
             if not date_match or not amount_match:
                 continue
 
+            # Must pass our filter
             if not is_probably_transaction(line):
                 continue
 
-            # Parse and standardize the date
+            # Format the date
             raw_date = date_match.group(1).replace('-', '/').replace('.', '/')
             try:
                 parsed_date = datetime.strptime(raw_date, "%m/%d/%Y").strftime("%m/%d/%Y")
@@ -73,21 +84,21 @@ def extract_transactions(raw_pages, learned_memory):
                 except ValueError:
                     continue
 
-            # Convert amount
+            # Parse amount
             amt_str = amount_match.group(0).replace('$', '').replace(',', '')
             try:
                 amount = float(amt_str)
             except ValueError:
                 continue
 
-            # Slice memo from between date and amount
+            # Extract and clean memo
             date_pos = line.find(date_match.group(0))
             amt_pos = line.find(amount_match.group(0))
             raw_memo = line[date_pos + len(date_match.group(0)):amt_pos].strip()
             cleaned_memo = clean_memo(raw_memo)
             memo_key = cleaned_memo.lower()
 
-            # Determine classification
+            # Classification
             account = learned_memory.get(memo_key, "Unclassified")
             classification_source = "learned_memory" if memo_key in learned_memory else "default"
 
