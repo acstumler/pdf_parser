@@ -2,20 +2,19 @@ import uuid
 import re
 from datetime import datetime
 
-# Match MM/DD/YYYY, MM-DD-YYYY, MM.DD.YY
+# Match MM/DD/YYYY, MM-DD-YYYY, MM.DD.YY at the start of the line
 DATE_REGEX = re.compile(r'^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}')
 AMOUNT_REGEX = re.compile(r'[-]?\$?[\d,]+\.\d{2}')
 
-# Section types to exclude (summaries, metadata, etc.)
 EXCLUDED_SECTIONS = [
     "SUMMARY", "REWARDS", "ACCOUNT INFO", "LATE FEES",
     "CREDIT SUMMARY", "MESSAGE", "NOTICES"
 ]
 
-def is_probably_transaction(line: str, section: str = "") -> bool:
+def is_probably_transaction(line: str, section: str, amount: float, memo: str) -> bool:
     line = line.strip()
 
-    # 1. Must begin with a valid date pattern
+    # 1. Must begin with a date
     if not DATE_REGEX.match(line):
         return False
 
@@ -23,9 +22,12 @@ def is_probably_transaction(line: str, section: str = "") -> bool:
     if section and section.strip().upper() in EXCLUDED_SECTIONS:
         return False
 
-    # 3. Line must include at least 4 words (date, memo, amount)
-    parts = line.split()
-    if len(parts) < 4:
+    # 3. Memo must contain at least 2 words
+    if len(memo.split()) < 2:
+        return False
+
+    # 4. Reject likely false positives: zero amount with sentence-like memo
+    if amount == 0 and (memo.startswith(",") or len(memo.split()) > 6):
         return False
 
     return True
@@ -33,10 +35,10 @@ def is_probably_transaction(line: str, section: str = "") -> bool:
 def clean_memo(raw_memo: str) -> str:
     memo = raw_memo.strip()
 
-    # Remove long numbers (store codes, transaction IDs)
+    # Remove long numbers, store codes, etc.
     memo = re.sub(r'\b\d{5,}\b', '', memo)
 
-    # Strip asterisks and normalize spacing
+    # Normalize spacing and symbols
     memo = re.sub(r'[*]', '', memo)
     memo = re.sub(r'\s{2,}', ' ', memo)
 
@@ -52,16 +54,30 @@ def extract_transactions(raw_pages, learned_memory):
         for line in page["lines"]:
             line = line.strip()
 
-            # Must contain date and amount
+            # Must contain valid date and amount
             date_match = DATE_REGEX.search(line)
             amount_match = AMOUNT_REGEX.search(line)
             if not date_match or not amount_match:
                 continue
 
-            if not is_probably_transaction(line, section):
+            # Parse amount before checking logic
+            amt_str = amount_match.group(0).replace('$', '').replace(',', '')
+            try:
+                amount = float(amt_str)
+            except ValueError:
                 continue
 
-            # Parse date
+            # Extract and clean memo
+            date_pos = line.find(date_match.group(0))
+            amt_pos = line.find(amount_match.group(0))
+            raw_memo = line[date_pos + len(date_match.group(0)):amt_pos].strip()
+            cleaned_memo = clean_memo(raw_memo)
+
+            # Check if this is a valid transaction structurally
+            if not is_probably_transaction(line, section, amount, cleaned_memo):
+                continue
+
+            # Format the date
             raw_date = date_match.group(0).replace('-', '/').replace('.', '/')
             try:
                 parsed_date = datetime.strptime(raw_date, "%m/%d/%Y").strftime("%m/%d/%Y")
@@ -71,21 +87,7 @@ def extract_transactions(raw_pages, learned_memory):
                 except ValueError:
                     continue
 
-            # Parse amount
-            amt_str = amount_match.group(0).replace('$', '').replace(',', '')
-            try:
-                amount = float(amt_str)
-            except ValueError:
-                continue
-
-            # Memo is text between date and amount
-            date_pos = line.find(date_match.group(0))
-            amt_pos = line.find(amount_match.group(0))
-            raw_memo = line[date_pos + len(date_match.group(0)):amt_pos].strip()
-            cleaned_memo = clean_memo(raw_memo)
             memo_key = cleaned_memo.lower()
-
-            # Default classification
             account = learned_memory.get(memo_key, "Unclassified")
             classification_source = "learned_memory" if memo_key in learned_memory else "default"
 
@@ -98,8 +100,8 @@ def extract_transactions(raw_pages, learned_memory):
                 "classificationSource": classification_source,
                 "source": source,
                 "section": section,
-                "uploadedFrom": "",       # Populated in frontend
-                "uploadedAt": None        # Populated in frontend
+                "uploadedFrom": "",
+                "uploadedAt": None
             })
 
     return { "transactions": transactions }
