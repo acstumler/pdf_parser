@@ -3,8 +3,8 @@ import re
 from datetime import datetime
 
 # Match MM/DD/YYYY, MM-DD-YYYY, MM.DD.YY at the start of the line
-DATE_REGEX = re.compile(r'^?\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}')
-AMOUNT_REGEX = re.compile(r'[-]?$?\d{1,3}(,\d{3})*\.\d{2}')
+DATE_REGEX = re.compile(r'^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}')
+AMOUNT_REGEX = re.compile(r'-?\$?\d{1,3}(,\d{3})*\.\d{2}')
 
 EXCLUDED_SECTIONS = [
     "SUMMARY", "REWARDS", "ACCOUNT INFO", "LATE FEES",
