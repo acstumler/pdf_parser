@@ -2,65 +2,43 @@ import uuid
 import re
 from datetime import datetime
 
-# Match date formats like MM/DD/YYYY, MM-DD-YYYY, MM.DD.YY
-DATE_REGEX = re.compile(r'\b(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4})\b')
+# Match MM/DD/YYYY, MM-DD-YYYY, MM.DD.YY
+DATE_REGEX = re.compile(r'^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}')
 AMOUNT_REGEX = re.compile(r'[-]?\$?[\d,]+\.\d{2}')
 
-# Phrases that indicate a line should be excluded
-BLOCKLIST_PHRASES = [
-    "late fee", "due date", "payment due", "total interest",
-    "total fees charged", "statement balance", "closing date",
-    "ending balance", "past due", "minimum payment", "new balance"
+# Section types to exclude (summaries, metadata, etc.)
+EXCLUDED_SECTIONS = [
+    "SUMMARY", "REWARDS", "ACCOUNT INFO", "LATE FEES",
+    "CREDIT SUMMARY", "MESSAGE", "NOTICES"
 ]
 
-# Phrases that imply a real transaction, charge, or payment
-VENDOR_KEYWORDS = [
-    "payment", "purchase", "restaurant", "store", "apple",
-    "paypal", "venmo", "uber", "auto", "liquors", "grill",
-    "hotel", "subway", "walgreens", "interest", "charge",
-    "chipotle", "market", "fuel", "circle k", "amazon",
-    "delivery", "shell", "service", "target", "kroger",
-    "transaction", "food", "gas", "mobile", "mcdonald", "starbucks"
-]
+def is_probably_transaction(line: str, section: str = "") -> bool:
+    line = line.strip()
 
-def is_probably_transaction(line: str) -> bool:
-    lower = line.lower().strip()
-
-    # Must start with a date
-    if not re.match(r'^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}', line):
+    # 1. Must begin with a valid date pattern
+    if not DATE_REGEX.match(line):
         return False
 
-    # Block lines with unwanted metadata
-    if any(phrase in lower for phrase in BLOCKLIST_PHRASES):
+    # 2. Section must not be excluded
+    if section and section.strip().upper() in EXCLUDED_SECTIONS:
         return False
 
-    # Keep lines that mention payments or interest directly
-    if "payment" in lower or "interest" in lower:
-        return True
+    # 3. Line must include at least 4 words (date, memo, amount)
+    parts = line.split()
+    if len(parts) < 4:
+        return False
 
-    # Or that include known vendor terms
-    return any(keyword in lower for keyword in VENDOR_KEYWORDS)
+    return True
 
 def clean_memo(raw_memo: str) -> str:
     memo = raw_memo.strip()
 
-    # Remove store IDs or trailing long numbers
+    # Remove long numbers (store codes, transaction IDs)
     memo = re.sub(r'\b\d{5,}\b', '', memo)
 
-    # Normalize punctuation and spacing
+    # Strip asterisks and normalize spacing
     memo = re.sub(r'[*]', '', memo)
     memo = re.sub(r'\s{2,}', ' ', memo)
-
-    # Remove common location info
-    memo = re.sub(r'\b(LOUISVILLE|NEW YORK|KY|CA|TX|MD|NC|IN|TN|OH)\b', '', memo, flags=re.IGNORECASE)
-
-    # Clean up known vendor names
-    memo = memo.replace("APPLE.COM/BILL", "Apple")
-    memo = memo.replace("PAYPAL", "PayPal")
-    memo = memo.replace("VENMO", "Venmo")
-    memo = memo.replace("APL*PAY", "ApplePay")
-    memo = memo.replace("APL PAY", "ApplePay")
-    memo = memo.replace("APPLE ONLINE STORE", "Apple")
 
     return memo.strip()
 
@@ -68,17 +46,23 @@ def extract_transactions(raw_pages, learned_memory):
     transactions = []
 
     for page in raw_pages:
+        section = page.get("section", "")
+        source = page.get("source", "")
+
         for line in page["lines"]:
-            # Extract date and amount
+            line = line.strip()
+
+            # Must contain date and amount
             date_match = DATE_REGEX.search(line)
             amount_match = AMOUNT_REGEX.search(line)
             if not date_match or not amount_match:
                 continue
 
-            if not is_probably_transaction(line):
+            if not is_probably_transaction(line, section):
                 continue
 
-            raw_date = date_match.group(1).replace('-', '/').replace('.', '/')
+            # Parse date
+            raw_date = date_match.group(0).replace('-', '/').replace('.', '/')
             try:
                 parsed_date = datetime.strptime(raw_date, "%m/%d/%Y").strftime("%m/%d/%Y")
             except ValueError:
@@ -87,19 +71,21 @@ def extract_transactions(raw_pages, learned_memory):
                 except ValueError:
                     continue
 
+            # Parse amount
             amt_str = amount_match.group(0).replace('$', '').replace(',', '')
             try:
                 amount = float(amt_str)
             except ValueError:
                 continue
 
-            # Extract and clean memo
+            # Memo is text between date and amount
             date_pos = line.find(date_match.group(0))
             amt_pos = line.find(amount_match.group(0))
             raw_memo = line[date_pos + len(date_match.group(0)):amt_pos].strip()
             cleaned_memo = clean_memo(raw_memo)
             memo_key = cleaned_memo.lower()
 
+            # Default classification
             account = learned_memory.get(memo_key, "Unclassified")
             classification_source = "learned_memory" if memo_key in learned_memory else "default"
 
@@ -110,10 +96,10 @@ def extract_transactions(raw_pages, learned_memory):
                 "amount": amount,
                 "account": account,
                 "classificationSource": classification_source,
-                "source": page.get("source", ""),
-                "section": page.get("section", ""),
-                "uploadedFrom": "",
-                "uploadedAt": None
+                "source": source,
+                "section": section,
+                "uploadedFrom": "",       # Populated in frontend
+                "uploadedAt": None        # Populated in frontend
             })
 
     return { "transactions": transactions }
