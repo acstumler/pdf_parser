@@ -3,8 +3,8 @@ import pdfplumber
 import re
 from datetime import datetime
 
-# Matches date formats like 10/25/2023, 10-25-23, or 10.25.23
-DATE_REGEX = re.compile(r'\b(\d{1,2}[/-\.]\d{1,2}[/-\.]\d{2,4})\b')
+# Matches MM/DD/YYYY, MM-DD-YYYY, MM.DD.YY, etc. using safe grouping
+DATE_REGEX = re.compile(r'\b(\d{1,2}(?:[\/\-.])\d{1,2}(?:[\/\-.])\d{2,4})\b')
 
 def extract_transactions(pdf_bytes):
     transactions = []
