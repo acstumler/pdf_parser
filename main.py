@@ -1,11 +1,10 @@
+# main.py
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 import tempfile
 import shutil
 import os
-from raw_parser import extract_raw_lines
-from semantic_extractor import extract_transactions
-import json
+from parse import extract_transactions  # <- now using pdfplumber-based parser
 
 app = FastAPI()
 
@@ -25,12 +24,10 @@ async def parse_pdf(file: UploadFile = File(...)):
         tmp_path = tmp.name
 
     try:
-        raw_lines = extract_raw_lines(tmp_path)
+        with open(tmp_path, "rb") as f:
+            pdf_bytes = f.read()
 
-        # Placeholder for learned memory (could be passed by user in future)
-        learned_memory = {}
-
-        parsed = extract_transactions(raw_lines, learned_memory)
+        parsed = extract_transactions(pdf_bytes)
         return parsed
     finally:
         os.remove(tmp_path)
