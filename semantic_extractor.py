@@ -2,24 +2,44 @@ import uuid
 import re
 from datetime import datetime
 
-# Regex to match date and amount
+# Match dates and dollar amounts
 DATE_REGEX = re.compile(r'\b(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4})\b')
 AMOUNT_REGEX = re.compile(r'[-]?\$?[\d,]+\.\d{2}')
 
-def clean_memo(raw_memo):
+# List of phrases that indicate a line is likely NOT a transaction
+BLOCKLIST_PHRASES = [
+    "late fee", "due date", "payment due", "total interest charged",
+    "total fees charged", "credit limit", "statement balance",
+    "minimum payment", "closing date", "ending balance"
+]
+
+def is_probably_transaction(line: str) -> bool:
+    lower_line = line.lower()
+
+    # Exclude any line containing blocklisted phrases
+    if any(phrase in lower_line for phrase in BLOCKLIST_PHRASES):
+        return False
+
+    # Require some text (not just numbers)
+    if not re.search(r'[a-zA-Z]{3,}', line):
+        return False
+
+    return True
+
+def clean_memo(raw_memo: str) -> str:
     memo = raw_memo.strip()
 
-    # Remove long number IDs and store codes
+    # Remove store IDs or trailing long numbers
     memo = re.sub(r'\b\d{5,}\b', '', memo)
 
-    # Remove extra asterisks and normalize spaces
+    # Normalize punctuation and spacing
     memo = re.sub(r'[*]', '', memo)
     memo = re.sub(r'\s{2,}', ' ', memo)
 
-    # Trim common locations or filler
+    # Remove common location terms
     memo = re.sub(r'\b(LOUISVILLE|HUNT VALLEY|NEW YORK|KY|MD|CA|TN|TX|OH|IN)\b', '', memo, flags=re.IGNORECASE)
 
-    # Normalize common vendor labels
+    # Normalize common vendor formats
     memo = memo.replace("APPLE.COM/BILL", "Apple")
     memo = memo.replace("PAYPAL", "PayPal")
     memo = memo.replace("VENMO", "Venmo")
@@ -34,13 +54,16 @@ def extract_transactions(raw_pages, learned_memory):
 
     for page in raw_pages:
         for line in page["lines"]:
+            # Date and amount must be present
             date_match = DATE_REGEX.search(line)
             amount_match = AMOUNT_REGEX.search(line)
-
             if not date_match or not amount_match:
                 continue
 
-            # Parse date
+            if not is_probably_transaction(line):
+                continue
+
+            # Parse and standardize the date
             raw_date = date_match.group(1).replace('-', '/').replace('.', '/')
             try:
                 parsed_date = datetime.strptime(raw_date, "%m/%d/%Y").strftime("%m/%d/%Y")
@@ -50,21 +73,21 @@ def extract_transactions(raw_pages, learned_memory):
                 except ValueError:
                     continue
 
-            # Parse amount
+            # Convert amount
             amt_str = amount_match.group(0).replace('$', '').replace(',', '')
             try:
                 amount = float(amt_str)
             except ValueError:
                 continue
 
-            # Extract memo text
+            # Slice memo from between date and amount
             date_pos = line.find(date_match.group(0))
             amt_pos = line.find(amount_match.group(0))
             raw_memo = line[date_pos + len(date_match.group(0)):amt_pos].strip()
             cleaned_memo = clean_memo(raw_memo)
             memo_key = cleaned_memo.lower()
 
-            # Determine account from memory
+            # Determine classification
             account = learned_memory.get(memo_key, "Unclassified")
             classification_source = "learned_memory" if memo_key in learned_memory else "default"
 
