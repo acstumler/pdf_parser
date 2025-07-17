@@ -1,32 +1,40 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from raw_parser import extract_pdf_lines
+import tempfile
+import shutil
+import os
+from raw_parser import extract_raw_lines
 from semantic_extractor import extract_transactions
 import json
 
 app = FastAPI()
 
-# Enable CORS for frontend requests
+# Allow frontend to connect
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # adjust for production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Load memory from file (or start empty)
-try:
-    with open("learned_vendors.json", "r") as f:
-        learned_memory = json.load(f)
-except FileNotFoundError:
-    learned_memory = {}
-
 @app.post("/parse-pdf")
 async def parse_pdf(file: UploadFile = File(...)):
-    pdf_bytes = await file.read()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        shutil.copyfileobj(file.file, tmp)
+        tmp_path = tmp.name
 
-    raw_output = extract_pdf_lines(pdf_bytes)
-    result = extract_transactions(raw_output, learned_memory)
+    try:
+        raw_lines = extract_raw_lines(tmp_path)
 
-    return result
+        # Placeholder for learned memory (could be passed by user in future)
+        learned_memory = {}
+
+        parsed = extract_transactions(raw_lines, learned_memory)
+        return parsed
+    finally:
+        os.remove(tmp_path)
+
+@app.get("/")
+def root():
+    return {"message": "LumiLedger PDF Parser is running."}

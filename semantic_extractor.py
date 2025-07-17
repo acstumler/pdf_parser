@@ -3,8 +3,8 @@ import re
 from datetime import datetime
 
 # Match MM/DD/YYYY, MM-DD-YYYY, MM.DD.YY at the start of the line
-DATE_REGEX = re.compile(r'^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}')
-AMOUNT_REGEX = re.compile(r'[-]?\$?[\d,]+\.\d{2}')
+DATE_REGEX = re.compile(r'^?\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}')
+AMOUNT_REGEX = re.compile(r'[-]?$?\d{1,3}(,\d{3})*\.\d{2}')
 
 EXCLUDED_SECTIONS = [
     "SUMMARY", "REWARDS", "ACCOUNT INFO", "LATE FEES",
@@ -14,7 +14,7 @@ EXCLUDED_SECTIONS = [
 def is_probably_transaction(line: str, section: str, amount: float, memo: str) -> bool:
     line = line.strip()
 
-    # 1. Must begin with a date
+    # 1. Must begin with a valid date pattern
     if not DATE_REGEX.match(line):
         return False
 
@@ -34,14 +34,9 @@ def is_probably_transaction(line: str, section: str, amount: float, memo: str) -
 
 def clean_memo(raw_memo: str) -> str:
     memo = raw_memo.strip()
-
-    # Remove long numbers, store codes, etc.
-    memo = re.sub(r'\b\d{5,}\b', '', memo)
-
-    # Normalize spacing and symbols
+    memo = re.sub(r'\b\d{5,}\b', '', memo)  # remove long numbers
     memo = re.sub(r'[*]', '', memo)
     memo = re.sub(r'\s{2,}', ' ', memo)
-
     return memo.strip()
 
 def extract_transactions(raw_pages, learned_memory):
@@ -51,33 +46,33 @@ def extract_transactions(raw_pages, learned_memory):
         section = page.get("section", "")
         source = page.get("source", "")
 
-        for line in page["lines"]:
-            line = line.strip()
+        for row in page["lines"]:
+            line = row.get("text", "").strip()
 
-            # Must contain valid date and amount
+            # Extract date
             date_match = DATE_REGEX.search(line)
             amount_match = AMOUNT_REGEX.search(line)
             if not date_match or not amount_match:
                 continue
 
-            # Parse amount before checking logic
+            # Parse amount
             amt_str = amount_match.group(0).replace('$', '').replace(',', '')
             try:
                 amount = float(amt_str)
             except ValueError:
                 continue
 
-            # Extract and clean memo
+            # Extract memo
             date_pos = line.find(date_match.group(0))
             amt_pos = line.find(amount_match.group(0))
             raw_memo = line[date_pos + len(date_match.group(0)):amt_pos].strip()
             cleaned_memo = clean_memo(raw_memo)
 
-            # Check if this is a valid transaction structurally
+            # Check logic
             if not is_probably_transaction(line, section, amount, cleaned_memo):
                 continue
 
-            # Format the date
+            # Parse date
             raw_date = date_match.group(0).replace('-', '/').replace('.', '/')
             try:
                 parsed_date = datetime.strptime(raw_date, "%m/%d/%Y").strftime("%m/%d/%Y")
