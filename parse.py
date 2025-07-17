@@ -1,8 +1,10 @@
 import io
+import uuid
 import pdfplumber
 import re
 from datetime import datetime
 
+# Regex to match date, amount, and source patterns
 DATE_REGEX = re.compile(r'\b(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4})\b')
 AMOUNT_REGEX = re.compile(r'[-]?\$?[\d,]+\.\d{2}')
 SOURCE_REGEX = re.compile(r'Account Ending(?:\s+in)?\s+(\d{4,6})', re.IGNORECASE)
@@ -61,30 +63,29 @@ def extract_transactions(pdf_bytes):
                 except ValueError:
                     continue
 
-                # Build memo from all parts between date and amount
+                # Build memo from parts between date and amount
                 date_pos = line.find(date_match.group(0))
                 amt_pos = line.find(amount_match.group(0))
                 memo = line[date_pos + len(date_match.group(0)):amt_pos].strip()
                 memo = ' '.join(memo.split())  # collapse extra spaces
 
-                # Handle bad or empty memo
                 if not memo or len(memo) < 2:
                     memo = 'UNKNOWN'
 
                 transaction = {
-                    "id": f"{page_num}-{i}",
+                    "id": str(uuid.uuid4()),
                     "date": parsed_date,
                     "memo": memo,
                     "amount": amount,
                     "source": current_source or "",
                     "section": current_section or "",
-                    "uploadedFrom": "",  # Filled by frontend
-                    "uploadedAt": None,   # Filled by frontend
+                    "uploadedFrom": "",
+                    "uploadedAt": None,
                     "account": "",
                     "classificationSource": "default"
                 }
 
                 transactions.append(transaction)
 
-    print(f"Total transactions parsed: {len(transactions)}")
-    return transactions
+    print(f"\nTotal transactions parsed: {len(transactions)}")
+    return { "transactions": transactions }
