@@ -1,5 +1,3 @@
-# parse.py
-
 import io
 import uuid
 import pdfplumber
@@ -10,7 +8,7 @@ from PIL import Image
 
 # Patterns
 DATE_REGEX = re.compile(r'\b(\d{1,2}/\d{1,2}/\d{2,4})\b')
-AMOUNT_REGEX = re.compile(r'-?\$?\d{1,3}(,\d{3})*(\.\d{2})')
+AMOUNT_REGEX = re.compile(r'-?\$[\d,]+\.\d{2}')  # ✅ Only matches values with $ sign
 SOURCE_REGEX = re.compile(r'Account Ending(?: in)?\s+(\d{4,6})', re.IGNORECASE)
 
 def clean_amount(value):
@@ -36,24 +34,28 @@ def is_valid_amount(amount):
     return amount is not None and abs(amount) >= 0.01
 
 def remove_old_interest_charges(transactions):
-    interest_keywords = ["interest", "finance charge", "pay over time"]
+    interest_keywords = ["interest", "finance", "pay over time"]
     interest_txns = [
         txn for txn in transactions
-        if any(kw in txn["memo"].lower() for kw in interest_keywords)
+        if any(kw in (txn["memo"] or "").lower() for kw in interest_keywords)
     ]
 
     if not interest_txns:
         return transactions
 
-    # Find the most recent interest-related transaction
     latest_date = max(datetime.strptime(txn["date"], "%m/%d/%Y") for txn in interest_txns)
 
-    # Filter: keep if not interest-related, or if it matches latest interest date
-    return [
-        txn for txn in transactions
-        if not any(kw in txn["memo"].lower() for kw in interest_keywords)
-        or datetime.strptime(txn["date"], "%m/%d/%Y") == latest_date
-    ]
+    filtered = []
+    for txn in transactions:
+        memo = (txn["memo"] or "").lower()
+        txn_date = datetime.strptime(txn["date"], "%m/%d/%Y")
+        is_interest_related = any(kw in memo for kw in interest_keywords)
+        is_legacy = txn_date < latest_date
+        if is_interest_related and is_legacy:
+            continue
+        filtered.append(txn)
+
+    return filtered
 
 def extract_transactions(pdf_bytes):
     transactions = []
@@ -63,7 +65,6 @@ def extract_transactions(pdf_bytes):
         for page_num, page in enumerate(pdf.pages):
             text = page.extract_text()
 
-            # Fallback to OCR if page is image-based
             if not text or len(text.strip()) < 30:
                 print(f"[OCR] Extracting text from image on page {page_num + 1}")
                 image = page.to_image(resolution=300).original
@@ -96,7 +97,6 @@ def extract_transactions(pdf_bytes):
                     memo_lines = [line]
                     amount = None
 
-                    # Look up to 6 lines ahead for amount
                     for j in range(1, 6):
                         if i + j < len(lines):
                             next_line = lines[i + j].strip()
@@ -113,7 +113,7 @@ def extract_transactions(pdf_bytes):
                     full_text = ' '.join(memo_lines)
                     memo_clean = re.sub(DATE_REGEX, '', full_text)
                     memo_clean = re.sub(AMOUNT_REGEX, '', memo_clean)
-                    memo_clean = re.sub(r'\s+', ' ', memo_clean).strip()
+                    memo_clean = re.sub(r'\s+', ' ', memo_clean).replace('%', '').strip()
 
                     txn_type, pre_classification = classify_transaction_type(memo_clean)
 
@@ -125,7 +125,7 @@ def extract_transactions(pdf_bytes):
                             "amount": amount,
                             "type": txn_type,
                             "section": "",
-                            "uploadedFrom": current_source or "",  # ✅ source field filled here
+                            "uploadedFrom": current_source or "",  # ✅ Correct Source column
                             "uploadedAt": None,
                             "account": pre_classification,
                             "classificationSource": "default" if not pre_classification else "preclassified"
