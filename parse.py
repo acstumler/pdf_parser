@@ -35,6 +35,26 @@ def classify_transaction_type(memo):
 def is_valid_amount(amount):
     return amount is not None and abs(amount) >= 0.01
 
+def remove_old_interest_charges(transactions):
+    interest_keywords = ["interest", "finance charge", "pay over time"]
+    interest_txns = [
+        txn for txn in transactions
+        if any(kw in txn["memo"].lower() for kw in interest_keywords)
+    ]
+
+    if not interest_txns:
+        return transactions
+
+    # Find the most recent interest-related transaction
+    latest_date = max(datetime.strptime(txn["date"], "%m/%d/%Y") for txn in interest_txns)
+
+    # Filter: keep if not interest-related, or if it matches latest interest date
+    return [
+        txn for txn in transactions
+        if not any(kw in txn["memo"].lower() for kw in interest_keywords)
+        or datetime.strptime(txn["date"], "%m/%d/%Y") == latest_date
+    ]
+
 def extract_transactions(pdf_bytes):
     transactions = []
     current_source = None
@@ -105,7 +125,7 @@ def extract_transactions(pdf_bytes):
                             "amount": amount,
                             "type": txn_type,
                             "section": "",
-                            "uploadedFrom": current_source or "",  # ✅ FIXED: Show AMEX 61005
+                            "uploadedFrom": current_source or "",  # ✅ source field filled here
                             "uploadedAt": None,
                             "account": pre_classification,
                             "classificationSource": "default" if not pre_classification else "preclassified"
@@ -113,5 +133,7 @@ def extract_transactions(pdf_bytes):
 
                 i += 1
 
-    print(f"✅ Parsed {len(transactions)} total financial entries.")
+    print(f"✅ Parsed {len(transactions)} total financial entries before filtering.")
+    transactions = remove_old_interest_charges(transactions)
+    print(f"✅ Remaining after removing legacy interest charges: {len(transactions)}")
     return { "transactions": transactions }
