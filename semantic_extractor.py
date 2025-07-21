@@ -11,6 +11,7 @@ def clean_memo(raw_memo: str) -> str:
     memo = re.sub(r'\b\d{5,}\b', '', memo)
     memo = re.sub(r'[%*]', '', memo)
     memo = re.sub(r'\(v\)', '', memo, flags=re.IGNORECASE)
+    memo = re.sub(r'[^a-zA-Z0-9&,. -]', '', memo)
     memo = re.sub(r'\s{2,}', ' ', memo)
     return memo.strip()
 
@@ -39,8 +40,7 @@ def should_skip_summary_interest(date_str: str, memo: str, amount: float, recent
         return False
     try:
         txn_date = datetime.strptime(date_str, "%m/%d/%Y")
-        is_old = txn_date < (datetime.now() - timedelta(days=60))
-        if is_old and recent_interest_seen:
+        if txn_date < datetime(2023, 10, 1) and recent_interest_seen:
             return True
     except:
         pass
@@ -49,20 +49,17 @@ def should_skip_summary_interest(date_str: str, memo: str, amount: float, recent
 def extract_transactions(raw_pages, learned_memory):
     transactions = []
     recent_interest_seen = False
-    print("Beginning semantic transaction extraction...")
 
     for page in raw_pages:
         section = page.get("section", "")
         lines = page.get("lines", [])
-        print(f"Processing page {page.get('page_number')} with {len(lines)} lines")
 
         current_source = ""
         for line_data in lines:
             line_text = line_data.get("text", "")
             match = SOURCE_REGEX.search(line_text)
             if match:
-                current_source = f"American Express {match.group(1)}"
-                print(f"Found source: {current_source}")
+                current_source = f"AMEX {match.group(1)}"
                 break
 
         i = 0
@@ -80,16 +77,11 @@ def extract_transactions(raw_pages, learned_memory):
                 try:
                     parsed_date = datetime.strptime(date_str, "%m/%d/%Y").strftime("%m/%d/%Y")
                 except ValueError:
-                    try:
-                        parsed_date = datetime.strptime(date_str, "%m/%d/%y").strftime("%m/%d/%Y")
-                    except ValueError:
-                        print(f"Skipped: Unreadable date format -> {line}")
-                        i += 1
-                        continue
+                    i += 1
+                    continue
 
                 amount_val = clean_amount(amt_match.group(0))
                 if amount_val is None or abs(amount_val) < 0.01:
-                    print(f"Skipped: Unusable amount -> {line}")
                     i += 1
                     continue
 
@@ -103,18 +95,15 @@ def extract_transactions(raw_pages, learned_memory):
 
                 full_memo = ' '.join(memo_lines)
                 cleaned_memo = clean_memo(full_memo)
-
                 txn_type, account, classification_source = classify_type_and_account(cleaned_memo)
 
                 if should_skip_summary_interest(parsed_date, cleaned_memo, amount_val, recent_interest_seen):
-                    print(f"Skipped legacy interest row: {cleaned_memo} [{parsed_date}]")
                     i += 1
                     continue
 
                 if txn_type == "interest":
                     recent_interest_seen = True
 
-                print(f"Added transaction: {txn_type} | {cleaned_memo} | ${amount_val}")
                 transactions.append({
                     "id": str(uuid.uuid4()),
                     "date": parsed_date,
@@ -132,5 +121,4 @@ def extract_transactions(raw_pages, learned_memory):
             else:
                 i += 1
 
-    print(f"Final transaction count: {len(transactions)}")
     return { "transactions": transactions }
