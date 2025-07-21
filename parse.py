@@ -3,12 +3,13 @@ import uuid
 import pdfplumber
 import re
 from datetime import datetime
+from dateutil.relativedelta import relativedelta
 import pytesseract
 from PIL import Image
 
 # Patterns
 DATE_REGEX = re.compile(r'\b(\d{1,2}/\d{1,2}/\d{2,4})\b')
-AMOUNT_REGEX = re.compile(r'-?\$[\d,]+\.\d{2}')  # ✅ Only matches values with $ sign
+AMOUNT_REGEX = re.compile(r'-?\$[\d,]+\.\d{2}')  # Require $ sign
 SOURCE_REGEX = re.compile(r'Account Ending(?: in)?\s+(\d{4,6})', re.IGNORECASE)
 
 def clean_amount(value):
@@ -56,6 +57,29 @@ def remove_old_interest_charges(transactions):
         filtered.append(txn)
 
     return filtered
+
+def looks_like_summary_interest_row(memo, date_str, amount):
+    memo_lower = (memo or "").lower()
+    if not memo_lower:
+        return False
+
+    # Must contain interest-related terms
+    if not any(kw in memo_lower for kw in ["interest", "pay over time", "apr", "summary"]):
+        return False
+
+    # Must be older than 1 year
+    try:
+        txn_date = datetime.strptime(date_str, "%m/%d/%Y")
+        if txn_date > datetime.now() - relativedelta(years=1):
+            return False
+    except:
+        return False
+
+    # Must be a small amount and not look like a vendor line
+    if amount is not None and amount < 100 and len(memo.split()) < 6:
+        return True
+
+    return False
 
 def extract_transactions(pdf_bytes):
     transactions = []
@@ -115,6 +139,11 @@ def extract_transactions(pdf_bytes):
                     memo_clean = re.sub(AMOUNT_REGEX, '', memo_clean)
                     memo_clean = re.sub(r'\s+', ' ', memo_clean).replace('%', '').strip()
 
+                    if looks_like_summary_interest_row(memo_clean, parsed_date, amount):
+                        print(f"🧹 Skipping summary interest row: {memo_clean} [{parsed_date}]")
+                        i += 1
+                        continue
+
                     txn_type, pre_classification = classify_transaction_type(memo_clean)
 
                     if is_valid_amount(amount):
@@ -125,7 +154,7 @@ def extract_transactions(pdf_bytes):
                             "amount": amount,
                             "type": txn_type,
                             "section": "",
-                            "uploadedFrom": current_source or "",  # ✅ Correct Source column
+                            "uploadedFrom": current_source or "",
                             "uploadedAt": None,
                             "account": pre_classification,
                             "classificationSource": "default" if not pre_classification else "preclassified"
