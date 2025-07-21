@@ -3,7 +3,7 @@ import re
 from datetime import datetime
 
 DATE_REGEX = re.compile(r'\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\b')
-AMOUNT_REGEX = re.compile(r'-?\$[\d,]+\.\d{2}')  # Require dollar sign only
+AMOUNT_REGEX = re.compile(r'-?\$[\d,]+\.\d{2}')
 SOURCE_REGEX = re.compile(r'Account Ending(?: in)?\s+(\d{1,2}-\d{4,5})', re.IGNORECASE)
 
 def clean_memo(raw_memo: str) -> str:
@@ -33,23 +33,35 @@ def classify_type_and_account(memo: str) -> tuple[str, str, str]:
         return "credit", "4090 - Refunds and Discounts (Contra-Revenue)", "preclassified"
     return "charge", "", "default"
 
+def is_old_interest_summary(memo: str, date_str: str, amount: float, known_interest_dates: set):
+    memo_lower = (memo or "").lower()
+    if not any(kw in memo_lower for kw in ["interest", "pay over time", "apr", "summary"]):
+        return False
+    try:
+        txn_date = datetime.strptime(date_str, "%m/%d/%Y")
+        if txn_date < datetime.now().replace(day=1) and "11/27/2023" in known_interest_dates:
+            return True
+    except:
+        pass
+    return False
+
 def extract_transactions(raw_pages, learned_memory):
     transactions = []
-    print(">>> Beginning semantic transaction extraction...")
+    interest_dates_seen = set()
+    print("Beginning semantic transaction extraction...")
 
     for page in raw_pages:
         section = page.get("section", "")
         lines = page.get("lines", [])
-        print(f"--- Processing page {page.get('page_number')} with {len(lines)} lines")
+        print(f"Processing page {page.get('page_number')} with {len(lines)} lines")
 
-        # ✅ Extract uploadedFrom from PDF line text only
         current_source = ""
         for line_data in lines:
             line_text = line_data.get("text", "")
             match = SOURCE_REGEX.search(line_text)
             if match:
                 current_source = f"American Express {match.group(1)}"
-                print(f"✅ Found source: {current_source}")
+                print(f"Found source: {current_source}")
                 break
 
         i = 0
@@ -63,7 +75,6 @@ def extract_transactions(raw_pages, learned_memory):
             amt_match = AMOUNT_REGEX.search(line)
 
             if date_match and amt_match:
-                # Extract date
                 date_str = date_match.group(0).replace('-', '/').replace('.', '/')
                 try:
                     parsed_date = datetime.strptime(date_str, "%m/%d/%Y").strftime("%m/%d/%Y")
@@ -75,14 +86,12 @@ def extract_transactions(raw_pages, learned_memory):
                         i += 1
                         continue
 
-                # Extract amount
                 amount_val = clean_amount(amt_match.group(0))
                 if amount_val is None or abs(amount_val) < 0.01:
                     print(f"Skipped: Unusable amount -> {line}")
                     i += 1
                     continue
 
-                # Build memo from nearby lines if memo is weak
                 memo_lines = []
                 if len(line) > len(date_str + amt_match.group(0)) + 6:
                     memo_lines.append(line)
@@ -94,9 +103,17 @@ def extract_transactions(raw_pages, learned_memory):
                 full_memo = ' '.join(memo_lines)
                 cleaned_memo = clean_memo(full_memo)
 
+                if is_old_interest_summary(cleaned_memo, parsed_date, amount_val, interest_dates_seen):
+                    print(f"Skipping legacy interest row: {cleaned_memo} [{parsed_date}]")
+                    i += 1
+                    continue
+
                 txn_type, account, classification_source = classify_type_and_account(cleaned_memo)
 
-                print(f"+++ Added transaction: {txn_type} | {cleaned_memo} | ${amount_val}")
+                if txn_type == "interest":
+                    interest_dates_seen.add(parsed_date)
+
+                print(f"Added transaction: {txn_type} | {cleaned_memo} | ${amount_val}")
                 transactions.append({
                     "id": str(uuid.uuid4()),
                     "date": parsed_date,
@@ -114,5 +131,5 @@ def extract_transactions(raw_pages, learned_memory):
             else:
                 i += 1
 
-    print(f">>> Final transaction count: {len(transactions)}")
+    print(f"Final transaction count: {len(transactions)}")
     return { "transactions": transactions }
