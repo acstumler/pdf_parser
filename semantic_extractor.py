@@ -2,13 +2,13 @@ import uuid
 import re
 from datetime import datetime
 
-DATE_REGEX = re.compile(r'^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}')
+DATE_REGEX = re.compile(r'\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\b')
 AMOUNT_REGEX = re.compile(r'-?\$?\d{1,3}(?:,\d{3})*(?:\.\d{2})')
 
 def clean_memo(raw_memo: str) -> str:
     memo = raw_memo.strip()
     memo = re.sub(r'\b\d{5,}\b', '', memo)
-    memo = re.sub(r'[*%]', '', memo)
+    memo = re.sub(r'[%*]', '', memo)
     memo = re.sub(r'\(v\)', '', memo, flags=re.IGNORECASE)
     memo = re.sub(r'\s{2,}', ' ', memo)
     return memo.strip()
@@ -32,19 +32,10 @@ def classify_type_and_account(memo: str) -> tuple[str, str, str]:
         return "credit", "4090 - Refunds and Discounts (Contra-Revenue)", "preclassified"
     return "charge", "", "default"
 
-def is_probably_transaction(date_line: str, amount: float, memo: str) -> bool:
-    if not DATE_REGEX.match(date_line):
-        return False
-    if amount is None or abs(amount) < 0.01:
-        return False
-    if len(memo.strip()) < 3:
-        return False
-    return True
-
 def extract_transactions(raw_pages, learned_memory):
     transactions = []
-
     print(">>> Beginning semantic transaction extraction...")
+
     for page in raw_pages:
         source = page.get("source", "")
         section = page.get("section", "")
@@ -53,62 +44,67 @@ def extract_transactions(raw_pages, learned_memory):
 
         i = 0
         while i < len(lines):
-            line_text = lines[i].get("text", "").strip()
-            date_match = DATE_REGEX.match(line_text)
+            line = lines[i].get("text", "").strip()
+            if not line:
+                i += 1
+                continue
 
-            if date_match:
+            date_match = DATE_REGEX.search(line)
+            amt_match = AMOUNT_REGEX.search(line)
+
+            if date_match and amt_match:
+                # Extract date
+                date_str = date_match.group(0).replace('-', '/').replace('.', '/')
                 try:
-                    raw_date = date_match.group(0).replace('-', '/').replace('.', '/')
-                    parsed_date = datetime.strptime(raw_date, "%m/%d/%Y").strftime("%m/%d/%Y")
+                    parsed_date = datetime.strptime(date_str, "%m/%d/%Y").strftime("%m/%d/%Y")
                 except ValueError:
-                    print(f"Skipped: Bad date format -> {line_text}")
+                    try:
+                        parsed_date = datetime.strptime(date_str, "%m/%d/%y").strftime("%m/%d/%Y")
+                    except ValueError:
+                        print(f"Skipped: Unreadable date format -> {line}")
+                        i += 1
+                        continue
+
+                # Extract amount
+                amount_val = clean_amount(amt_match.group(0))
+                if amount_val is None or abs(amount_val) < 0.01:
+                    print(f"Skipped: Unusable amount -> {line}")
                     i += 1
                     continue
 
+                # Build memo from nearby lines if memo is weak
                 memo_lines = []
-                amount = None
-                found_amount = False
+                if len(line) > len(date_str + amt_match.group(0)) + 6:
+                    memo_lines.append(line)
+                else:
+                    # Look forward up to 3 lines for vendor context
+                    for j in range(1, 4):
+                        if i + j < len(lines):
+                            memo_lines.append(lines[i + j].get("text", "").strip())
 
-                for j in range(1, 6):  # Look ahead up to 5 lines
-                    if i + j >= len(lines):
-                        break
-                    next_line = lines[i + j].get("text", "").strip()
-                    amt_match = AMOUNT_REGEX.search(next_line)
-                    if amt_match and not found_amount:
-                        amount_val = clean_amount(amt_match.group(0))
-                        if amount_val is not None:
-                            amount = amount_val
-                            found_amount = True
-                            i = i + j  # advance i to skip consumed lines
-                            continue
-                    else:
-                        memo_lines.append(next_line)
-
-                full_memo = " ".join(memo_lines)
-                stripped = re.sub(DATE_REGEX, '', full_memo)
-                stripped = re.sub(AMOUNT_REGEX, '', stripped)
-                cleaned_memo = clean_memo(stripped)
+                full_memo = ' '.join(memo_lines)
+                cleaned_memo = clean_memo(full_memo)
 
                 txn_type, account, classification_source = classify_type_and_account(cleaned_memo)
 
-                if is_probably_transaction(line_text, amount, cleaned_memo):
-                    print(f"+++ Added transaction: {txn_type} | {cleaned_memo} | ${amount}")
-                    transactions.append({
-                        "id": str(uuid.uuid4()),
-                        "date": parsed_date,
-                        "memo": cleaned_memo,
-                        "amount": amount,
-                        "type": txn_type,
-                        "account": account,
-                        "classificationSource": classification_source,
-                        "source": source,
-                        "section": section,
-                        "uploadedFrom": "",
-                        "uploadedAt": None
-                    })
-                else:
-                    print(f"Skipped: Incomplete transaction → Memo: {cleaned_memo}, Amount: {amount}")
-            i += 1
+                print(f"+++ Added transaction: {txn_type} | {cleaned_memo} | ${amount_val}")
+                transactions.append({
+                    "id": str(uuid.uuid4()),
+                    "date": parsed_date,
+                    "memo": cleaned_memo,
+                    "amount": amount_val,
+                    "type": txn_type,
+                    "account": account,
+                    "classificationSource": classification_source,
+                    "source": source,
+                    "section": section,
+                    "uploadedFrom": "",
+                    "uploadedAt": None
+                })
+
+                i += 4  # Skip the memo context lines too
+            else:
+                i += 1
 
     print(f">>> Final transaction count: {len(transactions)}")
     return { "transactions": transactions }
