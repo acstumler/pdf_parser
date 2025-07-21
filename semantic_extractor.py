@@ -3,7 +3,7 @@ import re
 from datetime import datetime
 
 DATE_REGEX = re.compile(r'\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\b')
-AMOUNT_REGEX = re.compile(r'-?\$?\d{1,3}(?:,\d{3})*(?:\.\d{2})')
+AMOUNT_REGEX = re.compile(r'-?\$[\d,]+\.\d{2}')  # Require dollar sign only
 SOURCE_REGEX = re.compile(r'Account Ending(?: in)?\s+(\d{1,2}-\d{4,5})', re.IGNORECASE)
 
 def clean_memo(raw_memo: str) -> str:
@@ -38,12 +38,11 @@ def extract_transactions(raw_pages, learned_memory):
     print(">>> Beginning semantic transaction extraction...")
 
     for page in raw_pages:
-        source = page.get("source", "")
         section = page.get("section", "")
         lines = page.get("lines", [])
         print(f"--- Processing page {page.get('page_number')} with {len(lines)} lines")
 
-        # ✅ Extract uploadedFrom from account header
+        # ✅ Extract uploadedFrom from PDF line text only
         current_source = ""
         for line_data in lines:
             line_text = line_data.get("text", "")
@@ -106,9 +105,8 @@ def extract_transactions(raw_pages, learned_memory):
                     "type": txn_type,
                     "account": account,
                     "classificationSource": classification_source,
-                    "source": source,
                     "section": section,
-                    "uploadedFrom": current_source,
+                    "uploadedFrom": current_source or "Unknown Source",
                     "uploadedAt": None
                 })
 
