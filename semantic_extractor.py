@@ -33,13 +33,14 @@ def classify_type_and_account(memo: str) -> tuple[str, str, str]:
         return "credit", "4090 - Refunds and Discounts (Contra-Revenue)", "preclassified"
     return "charge", "", "default"
 
-def is_old_interest_summary(memo: str, date_str: str, amount: float, known_interest_dates: set):
-    memo_lower = (memo or "").lower()
-    if not any(kw in memo_lower for kw in ["interest", "pay over time", "apr", "summary"]):
+def should_skip_summary_interest(date_str: str, memo: str, amount: float, recent_interest_seen: bool) -> bool:
+    memo_lower = memo.lower()
+    if not any(kw in memo_lower for kw in ["interest", "pay over time", "apr"]):
         return False
     try:
         txn_date = datetime.strptime(date_str, "%m/%d/%Y")
-        if txn_date < datetime.now().replace(day=1) and "11/27/2023" in known_interest_dates:
+        is_old = txn_date < datetime.now().replace(year=datetime.now().year - 1)
+        if is_old and recent_interest_seen:
             return True
     except:
         pass
@@ -47,7 +48,7 @@ def is_old_interest_summary(memo: str, date_str: str, amount: float, known_inter
 
 def extract_transactions(raw_pages, learned_memory):
     transactions = []
-    interest_dates_seen = set()
+    recent_interest_seen = False
     print("Beginning semantic transaction extraction...")
 
     for page in raw_pages:
@@ -103,15 +104,15 @@ def extract_transactions(raw_pages, learned_memory):
                 full_memo = ' '.join(memo_lines)
                 cleaned_memo = clean_memo(full_memo)
 
-                if is_old_interest_summary(cleaned_memo, parsed_date, amount_val, interest_dates_seen):
-                    print(f"Skipping legacy interest row: {cleaned_memo} [{parsed_date}]")
+                txn_type, account, classification_source = classify_type_and_account(cleaned_memo)
+
+                if should_skip_summary_interest(parsed_date, cleaned_memo, amount_val, recent_interest_seen):
+                    print(f"Skipped legacy interest row: {cleaned_memo} [{parsed_date}]")
                     i += 1
                     continue
 
-                txn_type, account, classification_source = classify_type_and_account(cleaned_memo)
-
                 if txn_type == "interest":
-                    interest_dates_seen.add(parsed_date)
+                    recent_interest_seen = True
 
                 print(f"Added transaction: {txn_type} | {cleaned_memo} | ${amount_val}")
                 transactions.append({
