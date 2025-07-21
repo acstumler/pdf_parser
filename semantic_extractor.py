@@ -4,6 +4,7 @@ from datetime import datetime
 
 DATE_REGEX = re.compile(r'\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\b')
 AMOUNT_REGEX = re.compile(r'-?\$?\d{1,3}(?:,\d{3})*(?:\.\d{2})')
+SOURCE_REGEX = re.compile(r'Account Ending(?: in)?\s+(\d{1,2}-\d{4,5})', re.IGNORECASE)
 
 def clean_memo(raw_memo: str) -> str:
     memo = raw_memo.strip()
@@ -42,6 +43,16 @@ def extract_transactions(raw_pages, learned_memory):
         lines = page.get("lines", [])
         print(f"--- Processing page {page.get('page_number')} with {len(lines)} lines")
 
+        # ✅ Extract uploadedFrom from account header
+        current_source = ""
+        for line_data in lines:
+            line_text = line_data.get("text", "")
+            match = SOURCE_REGEX.search(line_text)
+            if match:
+                current_source = f"American Express {match.group(1)}"
+                print(f"✅ Found source: {current_source}")
+                break
+
         i = 0
         while i < len(lines):
             line = lines[i].get("text", "").strip()
@@ -77,7 +88,6 @@ def extract_transactions(raw_pages, learned_memory):
                 if len(line) > len(date_str + amt_match.group(0)) + 6:
                     memo_lines.append(line)
                 else:
-                    # Look forward up to 3 lines for vendor context
                     for j in range(1, 4):
                         if i + j < len(lines):
                             memo_lines.append(lines[i + j].get("text", "").strip())
@@ -98,11 +108,11 @@ def extract_transactions(raw_pages, learned_memory):
                     "classificationSource": classification_source,
                     "source": source,
                     "section": section,
-                    "uploadedFrom": "",
+                    "uploadedFrom": current_source,
                     "uploadedAt": None
                 })
 
-                i += 4  # Skip the memo context lines too
+                i += 4
             else:
                 i += 1
 
