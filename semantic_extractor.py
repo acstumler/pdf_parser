@@ -1,6 +1,6 @@
 import uuid
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 DATE_REGEX = re.compile(r'\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\b')
 AMOUNT_REGEX = re.compile(r'-?\$[\d,]+\.\d{2}')
@@ -39,7 +39,7 @@ def should_skip_summary_interest(date_str: str, memo: str, amount: float, recent
         return False
     try:
         txn_date = datetime.strptime(date_str, "%m/%d/%Y")
-        is_old = txn_date < datetime.now().replace(year=datetime.now().year - 1)
+        is_old = txn_date < (datetime.now() - timedelta(days=60))
         if is_old and recent_interest_seen:
             return True
     except:
