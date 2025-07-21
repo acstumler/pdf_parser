@@ -104,11 +104,10 @@ def extract_transactions(pdf_bytes):
                             "memo": memo_clean,
                             "amount": amount,
                             "type": txn_type,
-                            "source": current_source or "",
                             "section": "",
-                            "uploadedFrom": "",
+                            "uploadedFrom": current_source or "",  # ✅ FIXED: Show AMEX 61005
                             "uploadedAt": None,
-                            "account": pre_classification,  # empty if type = charge
+                            "account": pre_classification,
                             "classificationSource": "default" if not pre_classification else "preclassified"
                         })
 
