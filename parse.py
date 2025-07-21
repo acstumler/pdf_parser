@@ -10,7 +10,7 @@ from PIL import Image
 # Patterns
 DATE_REGEX = re.compile(r'\b(\d{1,2}/\d{1,2}/\d{2,4})\b')
 AMOUNT_REGEX = re.compile(r'-?\$[\d,]+\.\d{2}')  # Require $ sign
-SOURCE_REGEX = re.compile(r'Account Ending(?: in)?\s+(\d{4,6})', re.IGNORECASE)
+SOURCE_REGEX = re.compile(r'Account Ending(?: in)?\s+(\d{1,2}-\d{4,5})', re.IGNORECASE)
 
 def clean_amount(value):
     value = value.replace('$', '').replace(',', '').replace('(', '-').replace(')', '')
@@ -63,11 +63,9 @@ def looks_like_summary_interest_row(memo, date_str, amount):
     if not memo_lower:
         return False
 
-    # Must contain interest-related terms
     if not any(kw in memo_lower for kw in ["interest", "pay over time", "apr", "summary"]):
         return False
 
-    # Must be older than 1 year
     try:
         txn_date = datetime.strptime(date_str, "%m/%d/%Y")
         if txn_date > datetime.now() - relativedelta(years=1):
@@ -75,7 +73,6 @@ def looks_like_summary_interest_row(memo, date_str, amount):
     except:
         return False
 
-    # Must be a small amount and not look like a vendor line
     if amount is not None and amount < 100 and len(memo.split()) < 6:
         return True
 
@@ -100,7 +97,10 @@ def extract_transactions(pdf_bytes):
                 if not current_source:
                     src_match = SOURCE_REGEX.search(line)
                     if src_match:
+                        # Keep dash in formatting for readability
                         current_source = f"American Express {src_match.group(1)}"
+                        # Or remove dash if you prefer:
+                        # current_source = f"American Express {src_match.group(1).replace('-', '')}"
 
             i = 0
             while i < len(lines):
