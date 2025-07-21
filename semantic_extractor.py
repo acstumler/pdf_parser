@@ -2,13 +2,12 @@ import uuid
 import re
 from datetime import datetime
 
-# Match MM/DD/YYYY, MM-DD-YYYY, MM.DD.YY at the start of the line
 DATE_REGEX = re.compile(r'^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}')
 AMOUNT_REGEX = re.compile(r'-?\$?\d{1,3}(?:,\d{3})*(?:\.\d{2})')
 
 def clean_memo(raw_memo: str) -> str:
     memo = raw_memo.strip()
-    memo = re.sub(r'\b\d{5,}\b', '', memo)  # remove long numbers
+    memo = re.sub(r'\b\d{5,}\b', '', memo)
     memo = re.sub(r'[*]', '', memo)
     memo = re.sub(r'\s{2,}', ' ', memo)
     return memo.strip()
@@ -21,11 +20,7 @@ def clean_amount(raw_amount: str) -> float | None:
         return None
 
 def is_probably_transaction(line: str, amount: float, memo: str) -> bool:
-    if not DATE_REGEX.match(line):
-        return False
-    if amount == 0 or len(memo.strip()) < 3:
-        return False
-    return True
+    return DATE_REGEX.match(line) and amount is not None and len(memo.strip()) >= 3
 
 def classify_type_and_account(memo: str) -> tuple[str, str, str]:
     memo_lower = memo.lower()
@@ -42,16 +37,19 @@ def classify_type_and_account(memo: str) -> tuple[str, str, str]:
 def extract_transactions(raw_pages, learned_memory):
     transactions = []
 
+    print(">>> Beginning semantic transaction extraction...")
     for page in raw_pages:
-        section = page.get("section", "")
         source = page.get("source", "")
+        section = page.get("section", "")
+        lines = page.get("lines", [])
+        print(f"--- Processing page {page.get('page_number')} with {len(lines)} lines")
 
-        lines = page["lines"]
         i = 0
         while i < len(lines):
             line_text = lines[i].get("text", "").strip()
-
+            print("Line:", line_text)
             date_match = DATE_REGEX.match(line_text)
+
             if date_match:
                 date_str = date_match.group(0).replace('-', '/').replace('.', '/')
                 try:
@@ -60,7 +58,6 @@ def extract_transactions(raw_pages, learned_memory):
                     i += 1
                     continue
 
-                # Try to find the amount in the next 5 lines
                 memo_lines = [line_text]
                 amount = None
                 for j in range(1, 6):
@@ -72,7 +69,7 @@ def extract_transactions(raw_pages, learned_memory):
                         amount_val = clean_amount(amt_match.group(0))
                         if amount_val is not None:
                             amount = amount_val
-                            i = i + j  # Advance past amount line
+                            i += j
                             break
                     else:
                         memo_lines.append(next_line)
@@ -85,6 +82,7 @@ def extract_transactions(raw_pages, learned_memory):
                 txn_type, account, classification_source = classify_type_and_account(cleaned_memo)
 
                 if is_probably_transaction(line_text, amount or 0, cleaned_memo):
+                    print(f"+++ Added transaction: {txn_type} | {cleaned_memo} | ${amount}")
                     transactions.append({
                         "id": str(uuid.uuid4()),
                         "date": parsed_date,
@@ -101,4 +99,5 @@ def extract_transactions(raw_pages, learned_memory):
 
             i += 1
 
+    print(f">>> Final transaction count: {len(transactions)}")
     return { "transactions": transactions }

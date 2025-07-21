@@ -6,11 +6,10 @@ import os
 
 from raw_parser import extract_raw_lines
 from semantic_extractor import extract_transactions as semantic_extract
-from parse import extract_transactions as fallback_extract  # OCR fallback
+from parse import extract_transactions as fallback_extract
 
 app = FastAPI()
 
-# Allow frontend to connect
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,12 +19,14 @@ app.add_middleware(
 )
 
 def is_line_data_valid(lines):
-    # Ensure at least 1 visually readable line has more than 10 characters
+    print("Checking visual line integrity...")
+    valid_count = 0
     for page in lines:
         for line in page.get("lines", []):
             if len(line.get("text", "").strip()) > 10:
-                return True
-    return False
+                valid_count += 1
+    print(f"Found {valid_count} valid visual lines")
+    return valid_count > 5
 
 @app.post("/parse-pdf")
 async def parse_pdf(file: UploadFile = File(...)):
@@ -35,28 +36,36 @@ async def parse_pdf(file: UploadFile = File(...)):
 
     try:
         try:
-            print("Attempting structured visual parsing...")
+            print(">>> Starting structured visual parsing (raw_parser.py)")
             raw_lines = extract_raw_lines(tmp_path)
 
+            print(">>> Sample lines from visual parser:")
+            for page in raw_lines[:1]:
+                for line in page.get("lines", [])[:3]:
+                    print("Line:", line.get("text"))
+
             if not is_line_data_valid(raw_lines):
-                print("Structured lines are invalid — falling back to OCR")
-                raise ValueError("Invalid visual line extraction")
+                print(">>> Visual line structure insufficient — fallback triggered")
+                raise ValueError("Structured visual content too weak")
 
             parsed = semantic_extract(raw_lines, learned_memory={})
-            if parsed and parsed["transactions"]:
-                print("Parsed using structured visual parsing")
+            print(f">>> Structured parsing found {len(parsed['transactions'])} transactions")
+
+            if parsed["transactions"]:
                 return parsed
 
         except Exception as e:
-            print("Structured parsing failed or invalid:", e)
+            print(">>> Structured parsing failed or invalid:", e)
 
         try:
-            print("Attempting OCR fallback parser...")
+            print(">>> Attempting OCR fallback (parse.py)")
             with open(tmp_path, "rb") as f:
                 pdf_bytes = f.read()
-            return fallback_extract(pdf_bytes)
+            parsed = fallback_extract(pdf_bytes)
+            print(f">>> OCR parsing returned {len(parsed['transactions'])} transactions")
+            return parsed
         except Exception as e:
-            print("OCR fallback failed:", e)
+            print(">>> OCR fallback also failed:", e)
             return { "transactions": [] }
 
     finally:
