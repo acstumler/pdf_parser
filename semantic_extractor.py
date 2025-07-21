@@ -6,16 +6,6 @@ from datetime import datetime
 DATE_REGEX = re.compile(r'^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}')
 AMOUNT_REGEX = re.compile(r'-?\$?\d{1,3}(?:,\d{3})*(?:\.\d{2})')
 
-EXCLUDED_SECTIONS = [
-    "SUMMARY", "REWARDS", "ACCOUNT INFO", "LATE FEES",
-    "CREDIT SUMMARY", "MESSAGE", "NOTICES"
-]
-
-EXCLUDE_MEMO_KEYWORDS = [
-    "interest charged", "payment due", "late fee", "fees",
-    "minimum payment", "previous balance", "total", "avoid interest"
-]
-
 def clean_memo(raw_memo: str) -> str:
     memo = raw_memo.strip()
     memo = re.sub(r'\b\d{5,}\b', '', memo)  # remove long numbers
@@ -30,16 +20,24 @@ def clean_amount(raw_amount: str) -> float | None:
     except ValueError:
         return None
 
-def is_probably_transaction(line: str, section: str, amount: float, memo: str) -> bool:
+def is_probably_transaction(line: str, amount: float, memo: str) -> bool:
     if not DATE_REGEX.match(line):
-        return False
-    if section and section.strip().upper() in EXCLUDED_SECTIONS:
-        return False
-    if any(k in memo.lower() for k in EXCLUDE_MEMO_KEYWORDS):
         return False
     if amount == 0 or len(memo.strip()) < 3:
         return False
     return True
+
+def classify_type_and_account(memo: str) -> tuple[str, str, str]:
+    memo_lower = memo.lower()
+    if "interest" in memo_lower:
+        return "interest", "7100 - Interest Expense", "preclassified"
+    if "fee" in memo_lower:
+        return "fee", "7110 - Loan Fees", "preclassified"
+    if "payment" in memo_lower or "thank you" in memo_lower:
+        return "payment", "Credit Card Payment", "preclassified"
+    if "credit" in memo_lower or "refund" in memo_lower:
+        return "credit", "4090 - Refunds and Discounts (Contra-Revenue)", "preclassified"
+    return "charge", "", "default"
 
 def extract_transactions(raw_pages, learned_memory):
     transactions = []
@@ -62,10 +60,10 @@ def extract_transactions(raw_pages, learned_memory):
                     i += 1
                     continue
 
-                # Try to find the amount in the next 3 lines
+                # Try to find the amount in the next 5 lines
                 memo_lines = [line_text]
                 amount = None
-                for j in range(1, 4):
+                for j in range(1, 6):
                     if i + j >= len(lines):
                         break
                     next_line = lines[i + j].get("text", "").strip()
@@ -84,16 +82,15 @@ def extract_transactions(raw_pages, learned_memory):
                 stripped_memo = re.sub(AMOUNT_REGEX, '', stripped_memo)
                 cleaned_memo = clean_memo(stripped_memo)
 
-                if is_probably_transaction(full_memo, section, amount or 0, cleaned_memo):
-                    memo_key = cleaned_memo.lower()
-                    account = learned_memory.get(memo_key, "Unclassified")
-                    classification_source = "learned_memory" if memo_key in learned_memory else "default"
+                txn_type, account, classification_source = classify_type_and_account(cleaned_memo)
 
+                if is_probably_transaction(line_text, amount or 0, cleaned_memo):
                     transactions.append({
                         "id": str(uuid.uuid4()),
                         "date": parsed_date,
                         "memo": cleaned_memo,
                         "amount": amount,
+                        "type": txn_type,
                         "account": account,
                         "classificationSource": classification_source,
                         "source": source,
