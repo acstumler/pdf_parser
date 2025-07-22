@@ -24,51 +24,55 @@ def extract_closing_date(text_lines) -> Optional[datetime]:
 def build_candidate_blocks(text_lines):
     blocks = []
     current_block = []
+    previous_y = None
+
     for line in text_lines:
-        line = line.strip()
-        if not line:
+        if isinstance(line, dict):
+            text, y0 = line.get("text", "").strip(), line.get("top", None)
+        else:
+            text, y0 = line.strip(), None
+
+        if not text:
             continue
 
-        if re.search(r"\d{2}/\d{2}/\d{2,4}", line):
+        if re.match(r"\d{2}/\d{2}/\d{2,4}", text):
             if current_block:
                 blocks.append(current_block)
-            current_block = [line]
+            current_block = [text]
+            previous_y = y0
         elif current_block:
-            current_block.append(line)
+            if y0 and previous_y and abs(y0 - previous_y) > 15:
+                continue
+            current_block.append(text)
+            previous_y = y0
+
     if current_block:
         blocks.append(current_block)
     return blocks
 
-def extract_transactions(text_lines, learned_memory=None):
-    if learned_memory is None:
-        learned_memory = {}
+def extract_statement_summary_totals(text_lines):
+    summary = {"payments": 0.0, "charges": 0.0, "interest": 0.0}
+    for line in text_lines:
+        lower = line.lower()
+        if "payments" in lower or "credits" in lower:
+            match = re.search(r"-?\$[\d,]+\.\d{2}", line)
+            if match:
+                summary["payments"] = float(match.group().replace("$", "").replace(",", "").replace("-", "").strip())
+        elif "new charges" in lower:
+            match = re.search(r"\$[\d,]+\.\d{2}", line)
+            if match:
+                summary["charges"] = float(match.group().replace("$", "").replace(",", ""))
+        elif "interest charged" in lower:
+            match = re.search(r"\$[\d,]+\.\d{2}", line)
+            if match:
+                summary["interest"] = float(match.group().replace("$", "").replace(",", ""))
+    return summary
 
-    source_account = extract_source_account(text_lines)
-    closing_date = extract_closing_date(text_lines)
-    if not closing_date:
-        return {"transactions": []}
-
-    blocks = build_candidate_blocks(text_lines)
-
-    # Use earliest valid block as start
-    valid_dates = []
-    for block in blocks:
-        date = extract_date_from_block(block)
-        if date and date <= closing_date:
-            valid_dates.append(date)
-
-    if not valid_dates:
-        return {"transactions": []}
-
-    start_date = min(valid_dates)
-
-    transactions = []
-    for block in blocks:
-        tx = parse_transaction_block(block, source_account, start_date, closing_date)
-        if tx:
-            transactions.append(tx)
-
-    return {"transactions": transactions}
+def verify_totals(transactions, extracted_totals):
+    parsed_payments = sum(t["amount"] for t in transactions if t["amount"] < 0)
+    parsed_charges = sum(t["amount"] for t in transactions if t["amount"] > 0)
+    return abs(abs(parsed_payments) - extracted_totals["payments"]) < 10 and \
+           abs(parsed_charges - extracted_totals["charges"]) < 10
 
 def extract_date_from_block(block):
     if not block:
@@ -84,22 +88,15 @@ def extract_date_from_block(block):
 def is_structurally_valid_block(block):
     if not block or len(block) < 2:
         return False
-
-    # Must include at least one line with alphabetic vendor-like content
     has_vendor_line = any(re.search(r"[A-Za-z]{3,}", line) for line in block)
     if not has_vendor_line:
         return False
-
-    # Must include a dollar amount or valid numeric format
     has_amount = any(re.search(r"\$?[\d,]+\.\d{2}", line) for line in block)
     if not has_amount:
         return False
-
-    # Exclude blocks where every line is just a number or dollar amount
     all_numeric = all(re.fullmatch(r"[\$,.\d\s\-]+", line) for line in block)
     if all_numeric:
         return False
-
     return True
 
 def parse_transaction_block(block, source_account, start_date, end_date):
@@ -111,7 +108,6 @@ def parse_transaction_block(block, source_account, start_date, end_date):
         return None
     date_str = date_obj.strftime("%m/%d/%Y")
 
-    # Extract amount
     full_block = " ".join(block)
     amount_match = re.findall(r"\$?\s?[\d,]+\.\d{2}", full_block)
     if not amount_match:
@@ -123,7 +119,7 @@ def parse_transaction_block(block, source_account, start_date, end_date):
         return None
 
     memo_line = next((line for line in block if re.search(r"[A-Za-z]", line)), "").strip()
-    if not memo_line or memo_line.lower().startswith("closing date"):
+    if not memo_line or len(memo_line.strip()) <= 2:
         return None
 
     memo = memo_line.split("  ")[0]
@@ -136,3 +132,29 @@ def parse_transaction_block(block, source_account, start_date, end_date):
         "amount": amount,
         "source": source_account
     }
+
+def extract_transactions(text_lines, learned_memory=None):
+    if learned_memory is None:
+        learned_memory = {}
+
+    source_account = extract_source_account(text_lines)
+    closing_date = extract_closing_date(text_lines)
+    if not closing_date:
+        return {"transactions": []}
+
+    blocks = build_candidate_blocks(text_lines)
+    valid_dates = [extract_date_from_block(b) for b in blocks if extract_date_from_block(b) and extract_date_from_block(b) <= closing_date]
+    if not valid_dates:
+        return {"transactions": []}
+    start_date = min(valid_dates)
+
+    transactions = []
+    for block in blocks:
+        tx = parse_transaction_block(block, source_account, start_date, closing_date)
+        if tx:
+            transactions.append(tx)
+
+    extracted_totals = extract_statement_summary_totals(text_lines)
+    verify_totals(transactions, extracted_totals)
+
+    return {"transactions": transactions}
