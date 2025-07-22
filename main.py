@@ -18,18 +18,16 @@ app.add_middleware(
 
 def extract_text_blocks(pdf_bytes):
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    pages = []
+    all_lines = []
     for page_num in range(len(doc)):
         page = doc[page_num]
         blocks = page.get_text("dict")["blocks"]
-        lines = []
         for b in blocks:
             for l in b.get("lines", []):
                 line_text = " ".join([s["text"] for s in l["spans"] if s["text"].strip()])
                 if line_text:
-                    lines.append({"text": line_text})
-        pages.append({"page": page_num + 1, "lines": lines})
-    return pages
+                    all_lines.append(line_text)
+    return all_lines
 
 @app.get("/")
 async def root():
@@ -39,10 +37,10 @@ async def root():
 async def parse_pdf(file: UploadFile = File(...)):
     try:
         pdf_bytes = await file.read()
-        text_blocks = extract_text_blocks(pdf_bytes)
+        text_lines = extract_text_blocks(pdf_bytes)
 
         print("DEBUG: Running semantic_extractor...")
-        parsed = extract_semantic(text_blocks, learned_memory={})
+        parsed = extract_semantic(text_lines, learned_memory={})
 
         if parsed and parsed.get("transactions"):
             print(f"Semantic parser returned {len(parsed['transactions'])} transactions")
