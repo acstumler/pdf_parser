@@ -66,9 +66,13 @@ def extract_transactions(raw_pages, learned_memory):
                 current_source = f"AMEX {match.group(1)}"
                 break
 
+        print(f"\n--- Processing Page with {len(lines)} lines ---")
+
         i = 0
         while i < len(lines):
             line = lines[i].get("text", "").strip()
+            print(f"[Line {i}] Raw: {line}")
+
             if not line:
                 i += 1
                 continue
@@ -81,11 +85,13 @@ def extract_transactions(raw_pages, learned_memory):
                 try:
                     parsed_date = datetime.strptime(date_str, "%m/%d/%Y").strftime("%m/%d/%Y")
                 except ValueError:
+                    print(f"  ✘ Skipped: Invalid date {date_str}")
                     i += 1
                     continue
 
                 amount_val = clean_amount(amt_match.group(0))
                 if amount_val is None or abs(amount_val) < 0.01:
+                    print(f"  ✘ Skipped: Invalid or zero amount {amt_match.group(0)}")
                     i += 1
                     continue
 
@@ -102,11 +108,11 @@ def extract_transactions(raw_pages, learned_memory):
                 txn_type, account, classification_source = classify_type_and_account(cleaned_memo)
 
                 if looks_like_summary_interest_row(cleaned_memo, date_str, amount_val):
+                    print(f"  ✘ Skipped: Summary interest row — {cleaned_memo}")
                     i += 1
                     continue
 
-                if txn_type == "interest":
-                    recent_interest_seen = True
+                print(f"  ✓ Added TXN: {parsed_date}, {cleaned_memo}, ${amount_val:.2f}")
 
                 transactions.append({
                     "id": str(uuid.uuid4()),
@@ -125,4 +131,5 @@ def extract_transactions(raw_pages, learned_memory):
             else:
                 i += 1
 
+    print(f"\n✅ Finished. Parsed {len(transactions)} transactions.")
     return { "transactions": transactions }
