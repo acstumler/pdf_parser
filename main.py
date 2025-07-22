@@ -2,8 +2,7 @@ from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi import status
-from semantic_extractor import extract_transactions as extract_semantic
-# from parse import extract_transactions as fallback_extract  # fallback disabled
+from semantic_extractor import extract_transactions
 import fitz  # PyMuPDF
 
 app = FastAPI()
@@ -16,11 +15,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def extract_text_blocks(pdf_bytes):
+def extract_text_lines(pdf_bytes):
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     all_lines = []
-    for page_num in range(len(doc)):
-        page = doc[page_num]
+    for page in doc:
         blocks = page.get_text("dict")["blocks"]
         for b in blocks:
             for l in b.get("lines", []):
@@ -31,22 +29,19 @@ def extract_text_blocks(pdf_bytes):
 
 @app.get("/")
 async def root():
-    return {"message": "Lighthouse PDF Parser is running."}
+    return {"message": "LumiLedger PDF Parser is running."}
 
 @app.post("/parse-pdf/")
 async def parse_pdf(file: UploadFile = File(...)):
     try:
         pdf_bytes = await file.read()
-        text_lines = extract_text_blocks(pdf_bytes)
+        text_lines = extract_text_lines(pdf_bytes)
 
-        print("DEBUG: Running semantic_extractor...")
-        parsed = extract_semantic(text_lines, learned_memory={})
+        parsed = extract_transactions(text_lines)
 
         if parsed and parsed.get("transactions"):
-            print(f"Semantic parser returned {len(parsed['transactions'])} transactions")
             return parsed
         else:
-            print("Semantic parser returned 0 transactions. Fallback disabled.")
             return JSONResponse(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 content={"error": "No transactions could be parsed from the PDF."}
