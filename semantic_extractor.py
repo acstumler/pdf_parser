@@ -36,13 +36,14 @@ def extract_transactions(text_lines, learned_memory=None):
         learned_memory = {}
 
     transactions = []
+    skipped = []
     current_block = []
     source_account = extract_source_account(text_lines)
     closing_date = extract_closing_date(text_lines)
     first_tx_date = extract_first_transaction_date(text_lines)
 
     if not closing_date or not first_tx_date:
-        return {"transactions": []}
+        return {"transactions": [], "skipped": []}
 
     for line in text_lines:
         line = line.strip()
@@ -51,58 +52,59 @@ def extract_transactions(text_lines, learned_memory=None):
 
         if re.search(r"\d{2}/\d{2}/\d{2,4}", line):
             if current_block:
-                tx = parse_transaction_block(current_block, source_account, first_tx_date, closing_date)
+                tx, reason = parse_transaction_block(current_block, source_account, first_tx_date, closing_date)
                 if tx:
                     transactions.append(tx)
+                elif reason:
+                    skipped.append({"reason": reason, "block": current_block})
             current_block = [line]
         elif current_block:
             current_block.append(line)
 
     if current_block:
-        tx = parse_transaction_block(current_block, source_account, first_tx_date, closing_date)
+        tx, reason = parse_transaction_block(current_block, source_account, first_tx_date, closing_date)
         if tx:
             transactions.append(tx)
+        elif reason:
+            skipped.append({"reason": reason, "block": current_block})
 
-    return {"transactions": transactions}
+    return {"transactions": transactions, "skipped": skipped}
 
 def parse_transaction_block(block, source_account, start_date, end_date):
     if not block:
-        return None
+        return None, "empty block"
 
     date_match = re.search(r"\d{2}/\d{2}/\d{2,4}", block[0])
     if not date_match:
-        return None
+        return None, "missing date"
 
     try:
         date_obj = parser.parse(date_match.group(0)).date()
         if not (start_date <= date_obj <= end_date):
-            return None
+            return None, "date out of range"
         date_str = date_obj.strftime("%m/%d/%Y")
     except:
-        return None
+        return None, "invalid date format"
 
     full_block = " ".join(block)
     noise_keywords = ["payment due", "customer care", "www.", "american express", "carol stream", "visit"]
     if any(kw in full_block.lower() for kw in noise_keywords):
-        return None
+        return None, "matched noise keyword"
 
     amount_match = re.findall(r"\$?\s?[\d,]+\.\d{2}", full_block)
     if not amount_match:
-        return None
+        return None, "no amount found"
 
-    amount_str = amount_match[-1].replace("$", "").replace(",", "").strip()
     try:
-        amount = float(amount_str)
+        amount = float(amount_match[-1].replace("$", "").replace(",", "").strip())
     except:
-        return None
+        return None, "invalid amount"
 
     memo_line = next((line for line in block if re.search(r"[A-Za-z]", line)), "").strip()
     if not memo_line:
-        return None
+        return None, "no memo line"
 
     memo = memo_line.split("  ")[0]
-
-    # Payment reversal logic
     if "payment" in memo.lower():
         amount = -abs(amount)
 
@@ -111,4 +113,4 @@ def parse_transaction_block(block, source_account, start_date, end_date):
         "memo": memo,
         "amount": amount,
         "source": source_account
-    }
+    }, None
