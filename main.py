@@ -29,6 +29,10 @@ def extract_text_blocks(pdf_bytes):
         pages.append({"page": page_num + 1, "lines": lines})
     return pages
 
+@app.get("/")
+async def root():
+    return {"message": "Lighthouse PDF Parser is running."}
+
 @app.post("/parse-pdf/")
 async def parse_pdf(file: UploadFile = File(...)):
     pdf_bytes = await file.read()
@@ -38,8 +42,8 @@ async def parse_pdf(file: UploadFile = File(...)):
     parsed = extract_semantic(text_blocks, learned_memory={})
 
     if parsed and parsed.get("transactions"):
-        print(f"✅ Semantic parser returned {len(parsed['transactions'])} transactions")
+        print(f"Semantic parser returned {len(parsed['transactions'])} transactions")
         return parsed
     else:
-        print("❌ Semantic parser returned 0 transactions. Fallback disabled.")
+        print("Semantic parser returned 0 transactions. Fallback disabled.")
         raise ValueError("Semantic parsing failed. No fallback allowed.")
