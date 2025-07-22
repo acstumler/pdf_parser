@@ -6,14 +6,14 @@ from typing import Optional
 def extract_source_account(text_lines):
     for line in text_lines:
         if "account ending" in line.lower():
-            match = re.search(r"(account ending\s+)?(\d{4,6})", line, re.IGNORECASE)
+            match = re.search(r"(account ending\\s+)?(\\d{4,6})", line, re.IGNORECASE)
             if match:
                 return f"AMEX {match.group(2)}"
     return "Unknown"
 
 def extract_closing_date(text_lines) -> Optional[datetime]:
     for line in text_lines:
-        match = re.search(r"Closing Date (\d{1,2}/\d{1,2}/\d{2,4})", line, re.IGNORECASE)
+        match = re.search(r"Closing Date (\\d{1,2}/\\d{1,2}/\\d{2,4})", line, re.IGNORECASE)
         if match:
             try:
                 return parser.parse(match.group(1)).date()
@@ -35,7 +35,7 @@ def build_candidate_blocks(text_lines):
         if not text:
             continue
 
-        if re.match(r"\d{2}/\d{2}/\d{2,4}", text):
+        if re.match(r"^\\d{2}/\\d{2}/\\d{2,4}", text):  # strict date anchor
             if current_block:
                 blocks.append(current_block)
             current_block = [text]
@@ -55,15 +55,15 @@ def extract_statement_summary_totals(text_lines):
     for line in text_lines:
         lower = line.lower()
         if "payments" in lower or "credits" in lower:
-            match = re.search(r"-?\$[\d,]+\.\d{2}", line)
+            match = re.search(r"-?\\$[\\d,]+\\.\\d{2}", line)
             if match:
                 summary["payments"] = float(match.group().replace("$", "").replace(",", "").replace("-", "").strip())
         elif "new charges" in lower:
-            match = re.search(r"\$[\d,]+\.\d{2}", line)
+            match = re.search(r"\\$[\\d,]+\\.\\d{2}", line)
             if match:
                 summary["charges"] = float(match.group().replace("$", "").replace(",", ""))
         elif "interest charged" in lower:
-            match = re.search(r"\$[\d,]+\.\d{2}", line)
+            match = re.search(r"\\$[\\d,]+\\.\\d{2}", line)
             if match:
                 summary["interest"] = float(match.group().replace("$", "").replace(",", ""))
     return summary
@@ -77,7 +77,7 @@ def verify_totals(transactions, extracted_totals):
 def extract_date_from_block(block):
     if not block:
         return None
-    date_match = re.search(r"\d{2}/\d{2}/\d{2,4}", block[0])
+    date_match = re.match(r"^\\d{2}/\\d{2}/\\d{2,4}", block[0])
     if not date_match:
         return None
     try:
@@ -88,13 +88,15 @@ def extract_date_from_block(block):
 def is_structurally_valid_block(block):
     if not block or len(block) < 2:
         return False
+    if not re.match(r"^\\d{2}/\\d{2}/\\d{2,4}", block[0]):
+        return False
     has_vendor_line = any(re.search(r"[A-Za-z]{3,}", line) for line in block)
     if not has_vendor_line:
         return False
-    has_amount = any(re.search(r"\$?[\d,]+\.\d{2}", line) for line in block)
+    has_amount = any(re.search(r"\\$?[\\d,]+\\.\\d{2}", line) for line in block)
     if not has_amount:
         return False
-    all_numeric = all(re.fullmatch(r"[\$,.\d\s\-]+", line) for line in block)
+    all_numeric = all(re.fullmatch(r"[\\$,\\.\\d\\s\\-]+", line) for line in block)
     if all_numeric:
         return False
     return True
@@ -109,7 +111,7 @@ def parse_transaction_block(block, source_account, start_date, end_date):
     date_str = date_obj.strftime("%m/%d/%Y")
 
     full_block = " ".join(block)
-    amount_match = re.findall(r"\$?\s?[\d,]+\.\d{2}", full_block)
+    amount_match = re.findall(r"\\$?\\s?[\\d,]+\\.\\d{2}", full_block)
     if not amount_match:
         return None
 
