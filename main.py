@@ -56,19 +56,17 @@ def extract_text_lines_with_ocr(file_buffer):
 @app.post("/parse-pdf/")
 async def parse_pdf(file: UploadFile = File(...)):
     try:
-        file_content = await file.read()
+        raw_bytes = await file.read()
 
-        # Fix: Ensure file_content is a proper byte stream
-        if isinstance(file_content, list):
-            file_content = b"".join(file_content)
+        if isinstance(raw_bytes, list):
+            raw_bytes = b"".join(raw_bytes)
+        elif not isinstance(raw_bytes, (bytes, bytearray)):
+            raise ValueError("Uploaded content is not byte-like")
 
-        if not isinstance(file_content, (bytes, bytearray)):
-            raise ValueError("Uploaded content is not byte-like.")
+        if not raw_bytes:
+            raise ValueError("Uploaded file is empty")
 
-        if not file_content:
-            raise ValueError("Uploaded file is empty or unreadable")
-
-        file_buffer = BytesIO(file_content)
+        file_buffer = BytesIO(raw_bytes)
 
         print("[INFO] Starting text extraction")
         text_lines = extract_text_lines_from_pdf(file_buffer)
@@ -78,16 +76,7 @@ async def parse_pdf(file: UploadFile = File(...)):
 
         if not result.get("transactions"):
             print("[INFO] No transactions from text. Trying OCR fallback.")
-
-            file_buffer.seek(0)
-            ocr_content = file_buffer.getvalue()
-
-            if isinstance(ocr_content, list):
-                ocr_content = b"".join(ocr_content)
-            elif not isinstance(ocr_content, (bytes, bytearray)):
-                raise ValueError("OCR fallback input is not byte-like.")
-
-            text_lines = extract_text_lines_with_ocr(BytesIO(ocr_content))
+            text_lines = extract_text_lines_with_ocr(BytesIO(raw_bytes))
             print(f"[INFO] Extracted {len(text_lines)} lines from OCR")
             result = extract_transactions(text_lines)
 
