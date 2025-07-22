@@ -1,87 +1,94 @@
-import React, { useState, useEffect, useRef, useContext } from "react";
-import axios from "axios";
-import { TransactionContext } from "../context/TransactionContext";
+from fastapi import FastAPI, File, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+import pdfplumber
+import pytesseract
+from pdf2image import convert_from_bytes
+from pytesseract import Output
+import tempfile
+import os
+from io import BytesIO
+from parse import extract_transactions
 
-const PARSER_ENDPOINT = "https://lighthouse-pdf-parser.onrender.com/parse-pdf/";
+app = FastAPI()
 
-const UploadParser = () => {
-  const [dragActive, setDragActive] = useState(false);
-  const [uploadStatus, setUploadStatus] = useState("Drop files here or click to upload");
-  const inputRef = useRef(null);
-  const { addParsedTransactions, addUploadLogEntry } = useContext(TransactionContext);
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-  useEffect(() => {
-    const savedTransactions = localStorage.getItem("lumi_transactions");
-    const savedUploadLog = localStorage.getItem("lumi_uploadLog");
-    if (savedTransactions) addParsedTransactions(JSON.parse(savedTransactions));
-    if (savedUploadLog) addUploadLogEntry(JSON.parse(savedUploadLog));
-  }, []);
+def extract_text_lines_from_pdf(file_buffer):
+    text_lines = []
+    try:
+        with pdfplumber.open(file_buffer) as pdf:
+            print(f"[INFO] PDF has {len(pdf.pages)} pages")
+            for page in pdf.pages:
+                text = page.extract_text()
+                if text:
+                    lines = text.split('\n')
+                    for line in lines:
+                        if line.strip():
+                            text_lines.append(line.strip())
+    except Exception as e:
+        print(f"[ERROR] pdfplumber extraction failed: {e}")
+    return text_lines
 
-  const handleFileUpload = async (file) => {
-    const formData = new FormData();
-    formData.append("file", file);
+def extract_text_lines_with_ocr(file_buffer):
+    text_lines = []
+    try:
+        with tempfile.TemporaryDirectory() as path:
+            images = convert_from_bytes(file_buffer.getvalue(), output_folder=path)
+            print(f"[INFO] OCR fallback: {len(images)} pages to process")
+            for img in images:
+                ocr_result = pytesseract.image_to_data(img, output_type=Output.DICT)
+                for i in range(len(ocr_result['text'])):
+                    text = ocr_result['text'][i].strip()
+                    top = ocr_result['top'][i]
+                    if text:
+                        text_lines.append({"text": text, "top": top})
+    except Exception as e:
+        print(f"[ERROR] OCR fallback failed: {e}")
+    return text_lines
 
-    try {
-      setUploadStatus("Uploading...");
-      const response = await axios.post(PARSER_ENDPOINT, formData);
-      const { transactions, source, count } = response.data;
+@app.post("/parse-pdf/")
+async def parse_pdf(file: UploadFile = File(...)):
+    try:
+        raw_bytes = await file.read()
 
-      if (transactions && transactions.length > 0) {
-        addParsedTransactions(transactions);
-        addUploadLogEntry([{ date: new Date().toLocaleString(), file: file.name, source, count }]);
-        setUploadStatus("Upload complete!");
-      } else {
-        setUploadStatus("No transactions found.");
-      }
-    } catch (err) {
-      console.error("Upload failed:", err);
-      setUploadStatus("Upload failed");
-    } finally {
-      setTimeout(() => setUploadStatus("Drop files here or click to upload"), 2000);
-    }
-  };
+        if isinstance(raw_bytes, list):
+            raw_bytes = b"".join(raw_bytes)
+        elif not isinstance(raw_bytes, (bytes, bytearray)):
+            raise ValueError("Uploaded content is not byte-like")
 
-  const handleChange = (e) => {
-    const files = e.target.files;
-    if (files && files.length > 0) handleFileUpload(files[0]);
-    inputRef.current.value = null; // clear input
-  };
+        if not raw_bytes:
+            raise ValueError("Uploaded file is empty")
 
-  const handleDrop = (e) => {
-    e.preventDefault();
-    setDragActive(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      handleFileUpload(e.dataTransfer.files[0]);
-    }
-  };
+        file_buffer = BytesIO(raw_bytes)
 
-  return (
-    <div
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={handleDrop}
-      className={`upload-drop-zone ${dragActive ? "active" : ""}`}
-      style={{
-        border: "2px dashed #aaa",
-        borderRadius: "8px",
-        padding: "1.5rem",
-        textAlign: "center",
-        background: dragActive ? "#f9f9f9" : "transparent",
-        transition: "background 0.3s ease"
-      }}
-    >
-      <input
-        type="file"
-        accept=".pdf"
-        ref={inputRef}
-        onChange={handleChange}
-        style={{ display: "none" }}
-      />
-      <button onClick={() => inputRef.current.click()}>Choose File</button>
-      <p style={{ marginTop: "0.5rem", color: uploadStatus.includes("failed") ? "red" : "#777" }}>
-        {uploadStatus}
-      </p>
-    </div>
-  );
-};
+        print("[INFO] Starting text extraction")
+        text_lines = extract_text_lines_from_pdf(file_buffer)
+        print(f"[INFO] Extracted {len(text_lines)} lines from text layer")
 
-export default UploadParser;
+        result = extract_transactions(text_lines)
+
+        if not result.get("transactions"):
+            print("[INFO] No transactions from text. Trying OCR fallback.")
+            text_lines = extract_text_lines_with_ocr(BytesIO(raw_bytes))
+            print(f"[INFO] Extracted {len(text_lines)} lines from OCR")
+            result = extract_transactions(text_lines)
+
+        if not result.get("transactions"):
+            print("[WARNING] Still no transactions found after OCR fallback")
+
+        return JSONResponse(content=result)
+
+    except Exception as e:
+        print(f"[ERROR] parse_pdf failed: {e}")
+        return JSONResponse(content={"error": str(e)}, status_code=422)
+
+@app.get("/")
+def health_check():
+    return {"status": "LumiLedger parser is online"}
