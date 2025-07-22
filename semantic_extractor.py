@@ -34,16 +34,20 @@ def classify_type_and_account(memo: str) -> tuple[str, str, str]:
         return "credit", "4090 - Refunds and Discounts (Contra-Revenue)", "preclassified"
     return "charge", "", "default"
 
-def should_skip_summary_interest(date_str: str, memo: str, amount: float, recent_interest_seen: bool) -> bool:
-    memo_lower = memo.lower()
-    if not any(kw in memo_lower for kw in ["interest", "pay over time", "apr"]):
+def looks_like_summary_interest_row(memo, date_str, amount):
+    memo_lower = (memo or "").lower()
+    if not memo_lower:
+        return False
+    if not any(kw in memo_lower for kw in ["interest", "pay over time", "apr", "summary"]):
         return False
     try:
         txn_date = datetime.strptime(date_str, "%m/%d/%Y")
-        if txn_date < datetime(2023, 10, 1) and recent_interest_seen:
+        if txn_date < datetime(2023, 10, 1):
             return True
     except:
-        pass
+        return False
+    if amount is not None and amount < 100 and len(memo.split()) < 6:
+        return True
     return False
 
 def extract_transactions(raw_pages, learned_memory):
@@ -97,7 +101,7 @@ def extract_transactions(raw_pages, learned_memory):
                 cleaned_memo = clean_memo(full_memo)
                 txn_type, account, classification_source = classify_type_and_account(cleaned_memo)
 
-                if should_skip_summary_interest(parsed_date, cleaned_memo, amount_val, recent_interest_seen):
+                if looks_like_summary_interest_row(cleaned_memo, date_str, amount_val):
                     i += 1
                     continue
 
