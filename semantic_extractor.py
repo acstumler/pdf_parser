@@ -1,108 +1,67 @@
-import uuid
 import re
-from datetime import datetime
 
-DATE_REGEX = re.compile(r'\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\b')
-AMOUNT_REGEX = re.compile(r'-?\$[\d,]+\.\d{2}')
-SOURCE_REGEX = re.compile(r'Account Ending(?: in)?\s+(\d{1,2}-\d{4,5})', re.IGNORECASE)
-
-def clean_memo(raw_memo: str) -> str:
-    memo = raw_memo.strip()
-    memo = re.sub(r'\b\d{5,}\b', '', memo)
-    memo = re.sub(r'[%*]', '', memo)
-    memo = re.sub(r'\(v\)', '', memo, flags=re.IGNORECASE)
-    memo = re.sub(r'[^a-zA-Z0-9&,. -]', '', memo)
-    memo = re.sub(r'\s{2,}', ' ', memo)
-    return memo.strip()
-
-def clean_amount(raw_amount: str) -> float | None:
-    cleaned = raw_amount.replace('$', '').replace(',', '').replace('(', '-').replace(')', '')
-    try:
-        return float(cleaned)
-    except ValueError:
-        return None
-
-def looks_like_summary_interest_row(memo, date_str, amount):
-    memo_lower = (memo or "").lower()
-    if not any(kw in memo_lower for kw in ["interest", "pay over time", "apr", "summary"]):
-        return False
-    try:
-        txn_date = datetime.strptime(date_str, "%m/%d/%Y")
-        return txn_date < datetime(2023, 10, 1)
-    except:
-        return False
-
-def extract_transactions(raw_pages, learned_memory):
+def extract_transactions_semantically(text: str, source_label: str) -> list:
+    """
+    Extracts transactions from OCR text using semantic pattern recognition.
+    """
+    lines = text.split("\n")
     transactions = []
-    current_source = ""
 
-    for page in raw_pages:
-        section = page.get("section", "")
-        lines = page.get("lines", [])
+    # Define month/day/year pattern
+    date_pattern = r"\b(0?[1-9]|1[0-2])[/-](0?[1-9]|[12][0-9]|3[01])[/-](\d{2}|\d{4})\b"
+    amount_pattern = r"\$?\(?-?\d{1,3}(?:,\d{3})*(?:\.\d{2})?\)?"
 
-        # Get source from any line
-        for line_data in lines:
-            text = line_data.get("text", "")
-            match = SOURCE_REGEX.search(text)
-            if match:
-                current_source = f"AMEX {match.group(1)}"
-                break
+    # Maintain state for a possible transaction
+    current_transaction = {}
 
-        print(f"\n--- Processing Page with {len(lines)} lines ---")
-        i = 0
-        while i < len(lines):
-            line = lines[i].get("text", "").strip()
-            print(f"[Line {i}] Raw: {line}")
+    for i, line in enumerate(lines):
+        clean_line = line.strip()
 
-            date_match = DATE_REGEX.search(line)
-            if date_match:
-                date_str = date_match.group(0).replace('-', '/').replace('.', '/')
-                try:
-                    parsed_date = datetime.strptime(date_str, "%m/%d/%Y").strftime("%m/%d/%Y")
-                except ValueError:
-                    i += 1
-                    continue
+        # Skip lines that are not semantically transactions
+        if not clean_line:
+            continue
+        if "Interest Charge Calculation" in clean_line or "Interest Charged" in clean_line:
+            continue
+        if "Pay Over Time" in clean_line or "Cash Advances" in clean_line:
+            continue
+        if "Minimum Payment" in clean_line or "Payment Due" in clean_line:
+            continue
+        if "ALANSON STUMLER" in clean_line:
+            continue
+        if re.search(r"Page \d+ of \d+", clean_line, re.IGNORECASE):
+            continue
+        if re.search(r"Total Interest Charged", clean_line, re.IGNORECASE):
+            continue
 
-                # Look ahead for amount and memo
-                memo_lines = []
-                amount_val = None
+        # Look for date
+        date_match = re.search(date_pattern, clean_line)
+        if date_match:
+            current_transaction["date"] = date_match.group(0)
 
-                for j in range(1, 7):  # next 6 lines
-                    if i + j < len(lines):
-                        next_line = lines[i + j].get("text", "").strip()
-                        amt_match = AMOUNT_REGEX.search(next_line)
-                        if amt_match and amount_val is None:
-                            amount_val = clean_amount(amt_match.group(0))
-                        else:
-                            memo_lines.append(next_line)
+        # Look for amount (skip negative/refund entries for now)
+        amount_match = re.search(amount_pattern, clean_line)
+        if amount_match:
+            raw_amount = amount_match.group(0).replace("$", "").replace(",", "")
+            try:
+                value = float(raw_amount.strip("()"))
+                if "(" in raw_amount or ")" in raw_amount:
+                    value = -value
+                current_transaction["amount"] = round(value, 2)
+            except ValueError:
+                continue
 
-                full_memo = ' '.join(memo_lines).strip()
-                cleaned_memo = clean_memo(full_memo)
+        # Look for vendor/memo line
+        if any(keyword in clean_line.lower() for keyword in ["llc", "inc", "restaurant", "coffee", "bar", "pay", "kroger", "paypal", "venmo", "target", "walmart", "starbucks", "store", "center", "stadium", "liquors", "apple.com", "deli", "chicken", "pizza", "cardinal", "tazikis", "autozone"]):
+            current_transaction["memo"] = clean_line
 
-                if looks_like_summary_interest_row(cleaned_memo, parsed_date, amount_val):
-                    print(f"✘ Skipping interest summary: {parsed_date} - {cleaned_memo}")
-                    i += 1
-                    continue
+        # If all pieces present, store the transaction
+        if "date" in current_transaction and "amount" in current_transaction and "memo" in current_transaction:
+            transactions.append({
+                "date": current_transaction["date"],
+                "memo": current_transaction["memo"].title(),
+                "amount": current_transaction["amount"],
+                "source": source_label
+            })
+            current_transaction = {}
 
-                if amount_val is not None and cleaned_memo:
-                    txn = {
-                        "id": str(uuid.uuid4()),
-                        "date": parsed_date,
-                        "memo": cleaned_memo,
-                        "amount": amount_val,
-                        "type": "charge",
-                        "account": "",
-                        "classificationSource": "default",
-                        "section": section,
-                        "uploadedFrom": current_source or "Unknown Source",
-                        "uploadedAt": None
-                    }
-                    transactions.append(txn)
-                    print(f"✓ Added TXN: {parsed_date} - {cleaned_memo} - ${amount_val:.2f}")
-
-                i += 6  # skip past chunk
-            else:
-                i += 1
-
-    print(f"\n✅ Finished. Parsed {len(transactions)} transactions.")
-    return { "transactions": transactions }
+    return transactions
