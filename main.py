@@ -78,8 +78,16 @@ async def parse_pdf(file: UploadFile = File(...)):
 
         if not result.get("transactions"):
             print("[INFO] No transactions from text. Trying OCR fallback.")
+
             file_buffer.seek(0)
-            text_lines = extract_text_lines_with_ocr(file_buffer)
+            ocr_content = file_buffer.getvalue()
+
+            if isinstance(ocr_content, list):
+                ocr_content = b"".join(ocr_content)
+            elif not isinstance(ocr_content, (bytes, bytearray)):
+                raise ValueError("OCR fallback input is not byte-like.")
+
+            text_lines = extract_text_lines_with_ocr(BytesIO(ocr_content))
             print(f"[INFO] Extracted {len(text_lines)} lines from OCR")
             result = extract_transactions(text_lines)
 
