@@ -2,6 +2,7 @@ import re
 from datetime import datetime
 from dateutil import parser
 
+
 def extract_semantic_blocks(text_lines):
     semantic_blocks = []
     current_block = []
@@ -30,7 +31,10 @@ def extract_semantic_blocks(text_lines):
     return semantic_blocks
 
 
-def extract_transactions(text_lines):
+def extract_transactions(text_lines, learned_memory=None):
+    if learned_memory is None:
+        learned_memory = {}
+
     blocks = extract_semantic_blocks(text_lines)
     transactions = []
 
