@@ -2,14 +2,12 @@ import io
 import uuid
 import pdfplumber
 import re
-from datetime import datetime
-from dateutil.relativedelta import relativedelta
+from datetime import datetime, timedelta
 import pytesseract
 from PIL import Image
 
-# Patterns
 DATE_REGEX = re.compile(r'\b(\d{1,2}/\d{1,2}/\d{2,4})\b')
-AMOUNT_REGEX = re.compile(r'-?\$[\d,]+\.\d{2}')  # Require $ sign
+AMOUNT_REGEX = re.compile(r'-?\$[\d,]+\.\d{2}')
 SOURCE_REGEX = re.compile(r'Account Ending(?: in)?\s+(\d{1,2}-\d{4,5})', re.IGNORECASE)
 
 def clean_amount(value):
@@ -62,20 +60,16 @@ def looks_like_summary_interest_row(memo, date_str, amount):
     memo_lower = (memo or "").lower()
     if not memo_lower:
         return False
-
     if not any(kw in memo_lower for kw in ["interest", "pay over time", "apr", "summary"]):
         return False
-
     try:
         txn_date = datetime.strptime(date_str, "%m/%d/%Y")
-        if txn_date > datetime.now() - relativedelta(years=1):
-            return False
+        if txn_date < datetime(2023, 10, 1):
+            return True
     except:
         return False
-
     if amount is not None and amount < 100 and len(memo.split()) < 6:
         return True
-
     return False
 
 def extract_transactions(pdf_bytes):
@@ -87,7 +81,6 @@ def extract_transactions(pdf_bytes):
             text = page.extract_text()
 
             if not text or len(text.strip()) < 30:
-                print(f"[OCR] Extracting text from image on page {page_num + 1}")
                 image = page.to_image(resolution=300).original
                 text = pytesseract.image_to_string(image)
 
@@ -97,10 +90,7 @@ def extract_transactions(pdf_bytes):
                 if not current_source:
                     src_match = SOURCE_REGEX.search(line)
                     if src_match:
-                        # Keep dash in formatting for readability
-                        current_source = f"American Express {src_match.group(1)}"
-                        # Or remove dash if you prefer:
-                        # current_source = f"American Express {src_match.group(1).replace('-', '')}"
+                        current_source = f"AMEX {src_match.group(1)}"
 
             i = 0
             while i < len(lines):
@@ -137,10 +127,10 @@ def extract_transactions(pdf_bytes):
                     full_text = ' '.join(memo_lines)
                     memo_clean = re.sub(DATE_REGEX, '', full_text)
                     memo_clean = re.sub(AMOUNT_REGEX, '', memo_clean)
-                    memo_clean = re.sub(r'\s+', ' ', memo_clean).replace('%', '').strip()
+                    memo_clean = re.sub(r'[^a-zA-Z0-9&,. -]', '', memo_clean)
+                    memo_clean = re.sub(r'\s+', ' ', memo_clean).strip()
 
                     if looks_like_summary_interest_row(memo_clean, parsed_date, amount):
-                        print(f"🧹 Skipping summary interest row: {memo_clean} [{parsed_date}]")
                         i += 1
                         continue
 
@@ -162,7 +152,5 @@ def extract_transactions(pdf_bytes):
 
                 i += 1
 
-    print(f"✅ Parsed {len(transactions)} total financial entries before filtering.")
     transactions = remove_old_interest_charges(transactions)
-    print(f"✅ Remaining after removing legacy interest charges: {len(transactions)}")
     return { "transactions": transactions }
