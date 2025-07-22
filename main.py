@@ -56,19 +56,20 @@ def extract_text_lines_with_ocr(file_buffer):
 @app.post("/parse-pdf/")
 async def parse_pdf(file: UploadFile = File(...)):
     try:
+        if file.content_type != "application/pdf":
+            raise ValueError("Only PDF files are supported.")
+
         raw_bytes = await file.read()
 
-        if isinstance(raw_bytes, list):
-            raw_bytes = b"".join(raw_bytes)
-        elif not isinstance(raw_bytes, (bytes, bytearray)):
-            raise ValueError("Uploaded content is not byte-like")
+        if not isinstance(raw_bytes, (bytes, bytearray)):
+            raise TypeError("Uploaded content is not byte-like")
 
         if not raw_bytes:
             raise ValueError("Uploaded file is empty")
 
+        print("[INFO] Starting text extraction")
         file_buffer = BytesIO(raw_bytes)
 
-        print("[INFO] Starting text extraction")
         text_lines = extract_text_lines_from_pdf(file_buffer)
         print(f"[INFO] Extracted {len(text_lines)} lines from text layer")
 
