@@ -57,6 +57,14 @@ def extract_text_lines_with_ocr(file_buffer):
 async def parse_pdf(file: UploadFile = File(...)):
     try:
         file_content = await file.read()
+
+        # Fix: Ensure file_content is a proper byte stream
+        if isinstance(file_content, list):
+            file_content = b"".join(file_content)
+
+        if not isinstance(file_content, (bytes, bytearray)):
+            raise ValueError("Uploaded content is not byte-like.")
+
         if not file_content:
             raise ValueError("Uploaded file is empty or unreadable")
 
