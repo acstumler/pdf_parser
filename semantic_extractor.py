@@ -50,7 +50,7 @@ def extract_transactions(text_lines, learned_memory=None):
 
     blocks = build_candidate_blocks(text_lines)
 
-    # Use the earliest valid date from blocks as start_date
+    # Use earliest valid transaction block as period start
     valid_dates = []
     for block in blocks:
         date = extract_date_from_block(block)
@@ -91,9 +91,18 @@ def parse_transaction_block(block, source_account, start_date, end_date):
     date_str = date_obj.strftime("%m/%d/%Y")
 
     full_block = " ".join(block)
-    noise_keywords = ["payment due", "customer care", "www.", "carol stream", "visit", "p. "]
-    if any(kw in full_block.lower() for kw in noise_keywords):
-        return None
+
+    # Allow "interest" memos but exclude interest rate disclosures
+    skip_if_patterns = [
+        r"\d{1,2}\.\d{1,2}%",          # percentages like 24.24%
+        r"annual percentage rate",     # APR disclosures
+        r"\(v\)",                      # variable rate marker
+        r"trailing interest",          # keyword for summary info
+        r"interest rate",              # not interest charges
+    ]
+    for pattern in skip_if_patterns:
+        if re.search(pattern, full_block, re.IGNORECASE):
+            return None
 
     amount_match = re.findall(r"\$?\s?[\d,]+\.\d{2}", full_block)
     if not amount_match:
