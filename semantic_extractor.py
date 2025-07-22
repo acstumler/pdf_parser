@@ -143,6 +143,7 @@ def extract_transactions(text_lines, learned_memory=None):
         return {"transactions": []}
 
     start_date = closing_date - timedelta(days=45)
+    print(f"[INFO] Enforcing date filter: Start = {start_date}, End = {closing_date}")
 
     blocks = build_candidate_blocks(text_lines)
 
