@@ -12,9 +12,9 @@ def extract_source_account(text_lines):
     return "Unknown"
 
 def extract_statement_period(text_lines) -> tuple[Optional[datetime], Optional[datetime]]:
-    # Try to find formats like "Oct 28 – Nov 27, 2023", or "11/28/23 - 12/28/23"
+    # Look for two dates like "11/28/2023 – 12/28/2023"
     for line in text_lines:
-        line = line.replace("–", "-")  # Normalize en dash
+        line = line.replace("–", "-")  # Normalize dashes
         date_matches = re.findall(r"\b\d{1,2}/\d{1,2}/\d{2,4}\b", line)
         if len(date_matches) == 2:
             try:
@@ -24,6 +24,7 @@ def extract_statement_period(text_lines) -> tuple[Optional[datetime], Optional[d
             except Exception:
                 continue
 
+        # Example: "Oct 28 - Nov 27, 2023"
         range_match = re.search(r"([A-Za-z]{3,9} \d{1,2})\s*[-to]+\s*([A-Za-z]{3,9} \d{1,2}, \d{4})", line)
         if range_match:
             try:
@@ -32,16 +33,6 @@ def extract_statement_period(text_lines) -> tuple[Optional[datetime], Optional[d
                 return start, end
             except Exception:
                 continue
-
-    # Fallback to closing date (less ideal, but better than nothing)
-    for line in text_lines:
-        match = re.search(r"Closing Date (\d{1,2}/\d{1,2}/\d{2,4})", line, re.IGNORECASE)
-        if match:
-            try:
-                end = parser.parse(match.group(1)).date()
-                return None, end  # Unknown start
-            except Exception:
-                pass
 
     return None, None
 
@@ -54,12 +45,16 @@ def extract_transactions(text_lines, learned_memory=None):
     source_account = extract_source_account(text_lines)
     start_date, end_date = extract_statement_period(text_lines)
 
+    # If we can't extract both dates, abort the parse
+    if not start_date or not end_date:
+        return {"transactions": []}
+
     for line in text_lines:
         line = line.strip()
         if not line:
             continue
 
-        if re.match(r"\d{2}/\d{2}/\d{2,4}", line.lstrip()):
+        if re.search(r"\d{2}/\d{2}/\d{2,4}", line):
             if current_block:
                 tx = parse_transaction_block(current_block, source_account, start_date, end_date)
                 if tx:
@@ -79,18 +74,17 @@ def parse_transaction_block(block, source_account, start_date, end_date):
     if not block:
         return None
 
-    date_match = re.match(r"\d{2}/\d{2}/\d{2,4}", block[0].strip())
+    # Search for date in any position in the first line
+    date_match = re.search(r"\d{2}/\d{2}/\d{2,4}", block[0])
     if not date_match:
         return None
 
     try:
         date_obj = parser.parse(date_match.group(0)).date()
-        if end_date and start_date and not (start_date <= date_obj <= end_date):
-            return None
-        elif end_date and not start_date and date_obj > end_date:
+        if not (start_date <= date_obj <= end_date):
             return None
         date_str = date_obj.strftime("%m/%d/%Y")
-    except Exception:
+    except:
         return None
 
     full_block = " ".join(block)
