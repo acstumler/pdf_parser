@@ -102,6 +102,10 @@ def parse_transaction_block(block, source_account, start_date, end_date):
 
     memo = memo_line.split("  ")[0]
 
+    # Payment reversal logic
+    if "payment" in memo.lower():
+        amount = -abs(amount)
+
     return {
         "date": date_str,
         "memo": memo,
