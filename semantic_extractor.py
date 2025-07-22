@@ -50,7 +50,7 @@ def extract_transactions(text_lines, learned_memory=None):
 
     blocks = build_candidate_blocks(text_lines)
 
-    # Use earliest valid transaction block as period start
+    # Use earliest valid block as start
     valid_dates = []
     for block in blocks:
         date = extract_date_from_block(block)
@@ -81,8 +81,29 @@ def extract_date_from_block(block):
     except:
         return None
 
+def is_structurally_valid_block(block):
+    if not block or len(block) < 2:
+        return False
+
+    # Must include at least one line with alphabetic vendor-like content
+    has_vendor_line = any(re.search(r"[A-Za-z]{3,}", line) for line in block)
+    if not has_vendor_line:
+        return False
+
+    # Must include a dollar amount or valid numeric format
+    has_amount = any(re.search(r"\$?[\d,]+\.\d{2}", line) for line in block)
+    if not has_amount:
+        return False
+
+    # Exclude blocks where every line is just a number or dollar amount
+    all_numeric = all(re.fullmatch(r"[\$,.\d\s\-]+", line) for line in block)
+    if all_numeric:
+        return False
+
+    return True
+
 def parse_transaction_block(block, source_account, start_date, end_date):
-    if not block:
+    if not is_structurally_valid_block(block):
         return None
 
     date_obj = extract_date_from_block(block)
@@ -90,20 +111,8 @@ def parse_transaction_block(block, source_account, start_date, end_date):
         return None
     date_str = date_obj.strftime("%m/%d/%Y")
 
+    # Extract amount
     full_block = " ".join(block)
-
-    # Allow "interest" memos but exclude interest rate disclosures
-    skip_if_patterns = [
-        r"\d{1,2}\.\d{1,2}%",          # percentages like 24.24%
-        r"annual percentage rate",     # APR disclosures
-        r"\(v\)",                      # variable rate marker
-        r"trailing interest",          # keyword for summary info
-        r"interest rate",              # not interest charges
-    ]
-    for pattern in skip_if_patterns:
-        if re.search(pattern, full_block, re.IGNORECASE):
-            return None
-
     amount_match = re.findall(r"\$?\s?[\d,]+\.\d{2}", full_block)
     if not amount_match:
         return None
@@ -114,7 +123,7 @@ def parse_transaction_block(block, source_account, start_date, end_date):
         return None
 
     memo_line = next((line for line in block if re.search(r"[A-Za-z]", line)), "").strip()
-    if not memo_line:
+    if not memo_line or memo_line.lower().startswith("closing date"):
         return None
 
     memo = memo_line.split("  ")[0]
