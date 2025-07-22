@@ -38,7 +38,6 @@ def remove_old_interest_charges(transactions):
         txn for txn in transactions
         if any(kw in (txn["memo"] or "").lower() for kw in interest_keywords)
     ]
-
     if not interest_txns:
         return transactions
 
