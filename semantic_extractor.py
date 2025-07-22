@@ -1,6 +1,6 @@
 import re
 from dateutil import parser
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 def extract_source_account(text_lines):
@@ -142,11 +142,9 @@ def extract_transactions(text_lines, learned_memory=None):
     if not closing_date:
         return {"transactions": []}
 
+    start_date = closing_date - timedelta(days=45)
+
     blocks = build_candidate_blocks(text_lines)
-    valid_dates = [extract_date_from_block(b) for b in blocks if extract_date_from_block(b) and extract_date_from_block(b) <= closing_date]
-    if not valid_dates:
-        return {"transactions": []}
-    start_date = min(valid_dates)
 
     transactions = []
     for block in blocks:
