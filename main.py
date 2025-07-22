@@ -1,9 +1,14 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi import status
-from semantic_extractor import extract_transactions
-import fitz  # PyMuPDF
+import pdfplumber
+import pytesseract
+from pdf2image import convert_from_bytes
+from pytesseract import Output
+import tempfile
+import os
+from io import BytesIO
+from parse import extract_transactions
 
 app = FastAPI()
 
@@ -15,40 +20,52 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def extract_text_lines(pdf_bytes):
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    all_lines = []
-    for page in doc:
-        blocks = page.get_text("dict")["blocks"]
-        for b in blocks:
-            for l in b.get("lines", []):
-                line_text = " ".join([s["text"] for s in l["spans"] if s["text"].strip()])
-                if line_text:
-                    all_lines.append(line_text)
-    return all_lines
+def extract_text_lines_from_pdf(file_buffer):
+    text_lines = []
+    try:
+        with pdfplumber.open(file_buffer) as pdf:
+            for page in pdf.pages:
+                lines = page.extract_text().split('\n') if page.extract_text() else []
+                for line in lines:
+                    text_lines.append(line.strip())
+    except Exception as e:
+        print(f"Error during pdfplumber extraction: {e}")
+    return text_lines
 
-@app.get("/")
-async def root():
-    return {"message": "LumiLedger PDF Parser is running."}
+def extract_text_lines_with_ocr(file_buffer):
+    text_lines = []
+    try:
+        with tempfile.TemporaryDirectory() as path:
+            images = convert_from_bytes(file_buffer.getvalue(), output_folder=path)
+            for img in images:
+                ocr_result = pytesseract.image_to_data(img, output_type=Output.DICT)
+                for i in range(len(ocr_result['text'])):
+                    text = ocr_result['text'][i].strip()
+                    top = ocr_result['top'][i]
+                    if text:
+                        text_lines.append({"text": text, "top": top})
+    except Exception as e:
+        print(f"Error during OCR fallback: {e}")
+    return text_lines
 
 @app.post("/parse-pdf/")
 async def parse_pdf(file: UploadFile = File(...)):
     try:
-        pdf_bytes = await file.read()
-        text_lines = extract_text_lines(pdf_bytes)
+        file_content = await file.read()
+        file_buffer = BytesIO(file_content)
 
-        parsed = extract_transactions(text_lines)
+        # First try pdfplumber
+        text_lines = extract_text_lines_from_pdf(file_buffer)
 
-        if parsed and parsed.get("transactions"):
-            return parsed
-        else:
-            return JSONResponse(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                content={"error": "No transactions could be parsed from the PDF."}
-            )
+        result = extract_transactions(text_lines)
+
+        if not result["transactions"]:
+            print("[INFO] Falling back to OCR")
+            file_buffer.seek(0)  # Reset buffer
+            text_lines = extract_text_lines_with_ocr(file_buffer)
+            result = extract_transactions(text_lines)
+
+        return JSONResponse(content=result)
+
     except Exception as e:
-        print("Exception during parsing:", e)
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"error": "An internal server error occurred while processing the PDF."}
-        )
+        return JSONResponse(content={"error": str(e)}, status_code=422)
