@@ -17,8 +17,8 @@ def extract_closing_date(text_lines) -> Optional[datetime]:
         if match:
             try:
                 return parser.parse(match.group(1)).date()
-            except:
-                continue
+            except Exception as e:
+                print(f"[ERROR] Failed to parse date from line '{line}': {e}")
     return None
 
 def build_candidate_blocks(text_lines):
@@ -71,7 +71,9 @@ def parse_transaction_block(block, source_account, start_date, end_date):
         return None
 
     try:
-        amount = float(amount_match.group().replace("$", "").replace(",", "").replace("(", "-").replace(")", ""))
+        amount = float(
+            amount_match.group().replace("$", "").replace(",", "").replace("(", "-").replace(")", "")
+        )
     except:
         return None
 
@@ -93,7 +95,6 @@ def extract_transactions(text_lines, learned_memory=None):
     if learned_memory is None:
         learned_memory = {}
 
-    source_account = extract_source_account(text_lines)
     closing_date = extract_closing_date(text_lines)
     if not closing_date:
         print("[WARNING] No closing date found. Using fallback range.")
@@ -102,6 +103,7 @@ def extract_transactions(text_lines, learned_memory=None):
     start_date = closing_date - timedelta(days=45)
     print(f"[INFO] Enforcing date filter: Start = {start_date}, End = {closing_date}")
 
+    source_account = extract_source_account(text_lines)
     blocks = build_candidate_blocks(text_lines)
     print(f"[INFO] Found {len(blocks)} candidate blocks")
 
