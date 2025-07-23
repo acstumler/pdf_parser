@@ -13,8 +13,8 @@ def extract_source_account(text_lines):
 
 def extract_closing_date(text_lines) -> Optional[datetime]:
     for line in text_lines:
-        print(f"[DEBUG] Scanning for closing date in: {line}")
         if "closing" in line.lower() and "date" in line.lower():
+            print(f"[DEBUG] Scanning for closing date in: {line}")
             match = re.search(r"(\d{1,2}/\d{1,2}/\d{2,4})", line)
             if match:
                 try:
@@ -63,27 +63,32 @@ def extract_date_from_block(block):
 
 def parse_transaction_block(block, source_account, start_date, end_date):
     if not block or len(block) < 2:
+        print(f"[SKIPPED] Too few lines in block: {block}")
         return None
 
     date_obj = extract_date_from_block(block)
     if not date_obj or not (start_date <= date_obj <= end_date):
+        print(f"[SKIPPED] Block outside date range: {block[0]}")
         return None
     date_str = date_obj.strftime("%m/%d/%Y")
 
     full_block = " ".join(block)
-    amount_match = re.search(r"-?\$[\d,]+\.\d{2}", full_block)
+    # Accept amounts with or without dollar sign
+    amount_match = re.search(r"-?\$?\d{1,3}(?:,\d{3})*\.\d{2}", full_block)
     if not amount_match:
+        print(f"[SKIPPED] No valid amount found in block: {block}")
         return None
 
     try:
-        amount = float(
-            amount_match.group().replace("$", "").replace(",", "").replace("(", "-").replace(")", "")
-        )
+        cleaned = amount_match.group().replace("$", "").replace(",", "")
+        amount = float(cleaned)
     except:
+        print(f"[SKIPPED] Could not parse amount from: {amount_match.group()}")
         return None
 
-    memo_line = next((line for line in block[1:] if re.search(r"[A-Za-z]{3,}", line)), "").strip()
-    if not memo_line or len(memo_line) <= 2:
+    memo_line = next((line for line in block[1:] if re.search(r"[A-Za-z]{2,}", line)), "").strip()
+    if not memo_line:
+        print(f"[SKIPPED] No memo found in block: {block}")
         return None
 
     if "payment" in memo_line.lower():
