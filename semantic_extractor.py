@@ -81,18 +81,28 @@ def parse_transaction_block(block, source_account, start_date, end_date, seen_fi
     except:
         return None
 
-    # Better memo line capture: pick the longest usable line
-    memo_candidates = [line.strip() for line in block[1:] if len(line.strip()) > 3]
+    # Stronger memo filtering logic
+    memo_candidates = [
+        line.strip()
+        for line in block[1:]
+        if re.search(r"[A-Za-z]{3,}", line)  # must have at least 3 letters
+        and not re.search(r"^\d{3}[-\s]?\d{3}[-\s]?\d{4}$", line)  # phone number
+        and "detail continued" not in line.lower()
+        and "pay over time" not in line.lower()
+        and "cash advance" not in line.lower()
+        and "continued on next page" not in line.lower()
+    ]
+
     memo_line = max(memo_candidates, key=len) if memo_candidates else ""
 
-    if not memo_line or "continued on next page" in memo_line.lower():
-        print(f"[SKIPPED] Memo invalid: {memo_line}")
+    if not memo_line:
+        print(f"[SKIPPED] Memo invalid: {block}")
         return None
 
     if "payment" in memo_line.lower() or "thank you" in memo_line.lower():
         amount = -abs(amount)
 
-    # Build a fingerprint to prevent duplicate transactions
+    # De-dupe transactions using fingerprint
     fingerprint = f"{date_str}|{memo_line.strip().lower()}|{amount:.2f}|{source_account}"
     if fingerprint in seen_fingerprints:
         print(f"[SKIPPED] Duplicate transaction: {fingerprint}")
