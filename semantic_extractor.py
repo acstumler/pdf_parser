@@ -3,6 +3,12 @@ from dateutil import parser
 from datetime import datetime, timedelta
 from typing import Optional
 
+# Known junk phrases in memo blocks
+EXCLUDE_MEMO_PATTERNS = [
+    "continued on", "detail continued", "cash advance", "closing date",
+    "account ending", "payment due", "fees", "see page", "pay over time"
+]
+
 def extract_source_account(text_lines):
     for line in text_lines:
         if "account ending" in line.lower():
@@ -61,6 +67,16 @@ def extract_date_from_block(block):
     except:
         return None
 
+def is_junk_memo(memo):
+    memo_lower = memo.lower()
+    if any(pat in memo_lower for pat in EXCLUDE_MEMO_PATTERNS):
+        return True
+    if re.fullmatch(r"\d{3}[-\s]?\d{3}[-\s]?\d{4}", memo):  # phone numbers
+        return True
+    if not re.search(r"[a-zA-Z]{3,}", memo):  # must have real letters
+        return True
+    return False
+
 def parse_transaction_block(block, source_account, start_date, end_date, seen_fingerprints):
     if not block or len(block) < 2:
         return None
@@ -81,16 +97,11 @@ def parse_transaction_block(block, source_account, start_date, end_date, seen_fi
     except:
         return None
 
-    # Stronger memo filtering logic
+    # Memo filter: pick longest line that passes junk rules
     memo_candidates = [
         line.strip()
         for line in block[1:]
-        if re.search(r"[A-Za-z]{3,}", line)  # must have at least 3 letters
-        and not re.search(r"^\d{3}[-\s]?\d{3}[-\s]?\d{4}$", line)  # phone number
-        and "detail continued" not in line.lower()
-        and "pay over time" not in line.lower()
-        and "cash advance" not in line.lower()
-        and "continued on next page" not in line.lower()
+        if len(line.strip()) > 3 and not is_junk_memo(line.strip())
     ]
 
     memo_line = max(memo_candidates, key=len) if memo_candidates else ""
@@ -102,11 +113,14 @@ def parse_transaction_block(block, source_account, start_date, end_date, seen_fi
     if "payment" in memo_line.lower() or "thank you" in memo_line.lower():
         amount = -abs(amount)
 
-    # De-dupe transactions using fingerprint
+    # Use strict fingerprint only for short blocks
+    use_fingerprint = len(block) <= 3 or len(memo_line) >= 12
     fingerprint = f"{date_str}|{memo_line.strip().lower()}|{amount:.2f}|{source_account}"
-    if fingerprint in seen_fingerprints:
-        print(f"[SKIPPED] Duplicate transaction: {fingerprint}")
+
+    if use_fingerprint and fingerprint in seen_fingerprints:
+        print(f"[SKIPPED] Duplicate fingerprint: {fingerprint}")
         return None
+
     seen_fingerprints.add(fingerprint)
 
     return {
