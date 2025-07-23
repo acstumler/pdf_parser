@@ -8,7 +8,8 @@ from pytesseract import Output
 import tempfile
 import os
 from io import BytesIO
-from semantic_extractor import extract_transactions  # <-- ✅ correct import
+from semantic_extractor import extract_transactions
+from collections import defaultdict
 
 app = FastAPI()
 
@@ -36,22 +37,41 @@ def extract_text_lines_from_pdf(file_buffer):
         print(f"[ERROR] pdfplumber extraction failed: {e}")
     return text_lines
 
-def extract_text_lines_with_ocr(file_buffer):
-    text_lines = []
+def extract_text_lines_with_ocr_structured(pdf_bytes):
+    structured_lines = []
+
     try:
         with tempfile.TemporaryDirectory() as path:
-            images = convert_from_bytes(file_buffer.getvalue(), output_folder=path)
+            images = convert_from_bytes(pdf_bytes, output_folder=path)
             print(f"[INFO] OCR fallback: {len(images)} pages to process")
-            for img in images:
+
+            for page_index, img in enumerate(images):
                 ocr_result = pytesseract.image_to_data(img, output_type=Output.DICT)
-                for i in range(len(ocr_result['text'])):
-                    text = ocr_result['text'][i].strip()
-                    top = ocr_result['top'][i]
-                    if text:
-                        text_lines.append({"text": text, "top": top})
+                page_lines = defaultdict(list)
+
+                for i in range(len(ocr_result["text"])):
+                    word = ocr_result["text"][i].strip()
+                    if not word:
+                        continue
+
+                    y = ocr_result["top"][i]
+                    x = ocr_result["left"][i]
+
+                    # Round y to group by row
+                    line_y = round(y / 10) * 10
+                    page_lines[line_y].append((x, word))
+
+                for line_y in sorted(page_lines.keys()):
+                    words = sorted(page_lines[line_y], key=lambda w: w[0])
+                    line_text = " ".join(w[1] for w in words).strip()
+                    if line_text:
+                        structured_lines.append(line_text)
+
     except Exception as e:
-        print(f"[ERROR] OCR fallback failed: {e}")
-    return text_lines
+        print(f"[ERROR] OCR structured extraction failed: {e}")
+
+    print(f"[INFO] Extracted {len(structured_lines)} structured lines from OCR")
+    return structured_lines
 
 @app.post("/parse-pdf/")
 async def parse_pdf(file: UploadFile = File(...)):
@@ -73,11 +93,11 @@ async def parse_pdf(file: UploadFile = File(...)):
         text_lines = extract_text_lines_from_pdf(file_buffer)
         print(f"[INFO] Extracted {len(text_lines)} lines from text layer")
 
-        result = extract_transactions(text_lines)  # ✅ correct usage
+        result = extract_transactions(text_lines)
 
         if not result.get("transactions"):
             print("[INFO] No transactions from text. Trying OCR fallback.")
-            text_lines = extract_text_lines_with_ocr(BytesIO(raw_bytes))
+            text_lines = extract_text_lines_with_ocr_structured(raw_bytes)
             print(f"[INFO] Extracted {len(text_lines)} lines from OCR")
             result = extract_transactions(text_lines)
 
