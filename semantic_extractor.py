@@ -61,7 +61,7 @@ def extract_date_from_block(block):
     except:
         return None
 
-def parse_transaction_block(block, source_account, start_date, end_date):
+def parse_transaction_block(block, source_account, start_date, end_date, seen_fingerprints):
     if not block or len(block) < 2:
         return None
 
@@ -81,13 +81,23 @@ def parse_transaction_block(block, source_account, start_date, end_date):
     except:
         return None
 
-    memo_line = next((line for line in block[1:] if re.search(r"[A-Za-z]{2,}", line)), "").strip()
+    # Better memo line capture: pick the longest usable line
+    memo_candidates = [line.strip() for line in block[1:] if len(line.strip()) > 3]
+    memo_line = max(memo_candidates, key=len) if memo_candidates else ""
+
     if not memo_line or "continued on next page" in memo_line.lower():
-        print(f"[SKIPPED] Ignored memo line: {memo_line}")
+        print(f"[SKIPPED] Memo invalid: {memo_line}")
         return None
 
-    if "payment" in memo_line.lower():
+    if "payment" in memo_line.lower() or "thank you" in memo_line.lower():
         amount = -abs(amount)
+
+    # Build a fingerprint to prevent duplicate transactions
+    fingerprint = f"{date_str}|{memo_line.strip().lower()}|{amount:.2f}|{source_account}"
+    if fingerprint in seen_fingerprints:
+        print(f"[SKIPPED] Duplicate transaction: {fingerprint}")
+        return None
+    seen_fingerprints.add(fingerprint)
 
     return {
         "date": date_str,
@@ -112,19 +122,13 @@ def extract_transactions(text_lines, learned_memory=None):
     blocks = build_candidate_blocks(text_lines)
     print(f"[INFO] Found {len(blocks)} candidate blocks")
 
+    seen_fingerprints = set()
     transactions = []
-    block_hashes = set()
 
     for block in blocks:
-        block_key = "|".join(block).strip().lower()
-        if block_key in block_hashes:
-            print(f"[SKIPPED] Duplicate block detected")
-            continue
-        block_hashes.add(block_key)
-
-        tx = parse_transaction_block(block, source_account, start_date, closing_date)
+        tx = parse_transaction_block(block, source_account, start_date, closing_date, seen_fingerprints)
         if tx:
             transactions.append(tx)
 
-    print(f"[INFO] Parsed {len(transactions)} unique transactions")
+    print(f"[INFO] Final parsed transactions: {len(transactions)}")
     return {"transactions": transactions}
