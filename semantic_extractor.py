@@ -7,7 +7,7 @@ from utils.clean_vendor_name import clean_vendor_name
 def extract_source_account(text_lines):
     for line in text_lines:
         if "account ending" in line.lower():
-            match = re.search(r"account ending\s*(\d{4,6})", line, re.IGNORECASE)
+            match = re.search(r"account ending[\s:-]*(\d{4,6})", line, re.IGNORECASE)
             if match:
                 return f"AMEX {match.group(1)}"
     return "Unknown Source"
@@ -26,6 +26,13 @@ def parse_amount(text):
         return float(text)
     except:
         return None
+
+def extract_amount_from_line(line):
+    for word in reversed(line):
+        amt = parse_amount(word['text'])
+        if amt is not None:
+            return amt
+    return None
 
 def extract_date(text):
     try:
@@ -54,11 +61,9 @@ def extract_transactions_from_pdf(file_path):
                     continue
 
                 left = line[0]['text']
-                right = line[-1]['text']
-                middle = " ".join(w['text'] for w in line[1:-1])
-
                 date = extract_date(left)
-                amount = parse_amount(right)
+                amount = extract_amount_from_line(line)
+                middle = " ".join(w['text'].strip() for w in line[1:-1] if len(w['text'].strip()) > 1)
                 memo = clean_vendor_name(middle)
 
                 if not (date and amount):
