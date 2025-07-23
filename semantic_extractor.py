@@ -13,16 +13,16 @@ def extract_source_account(text_lines):
 
 def extract_closing_date(text_lines) -> Optional[datetime]:
     for line in text_lines:
-        if "closing date" in line.lower():
-            print(f"[DEBUG] Checking line for closing date: {line}")
-            match = re.search(r"Closing Date (\d{1,2}/\d{1,2}/\d{2,4})", line, re.IGNORECASE)
+        print(f"[DEBUG] Scanning for closing date in: {line}")
+        if "closing" in line.lower() and "date" in line.lower():
+            match = re.search(r"(\d{1,2}/\d{1,2}/\d{2,4})", line)
             if match:
                 try:
                     parsed = parser.parse(match.group(1)).date()
                     print(f"[INFO] Closing date parsed successfully: {parsed}")
                     return parsed
                 except Exception as e:
-                    print(f"[ERROR] Failed to parse closing date from line '{line}': {e}")
+                    print(f"[ERROR] Failed to parse closing date from line: '{line}' → {e}")
     print("[WARNING] No matching line found for closing date")
     return None
 
