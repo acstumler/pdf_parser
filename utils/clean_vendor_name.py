@@ -18,7 +18,7 @@ def clean_vendor_name(memo_raw):
     # Replace slashes or pipes with space
     memo = re.sub(r"[-/\\|]+", " ", memo)
 
-    # Collapse excess whitespace (fixes broken single-char spacing)
+    # Collapse excess whitespace
     memo = re.sub(r"\s+", " ", memo)
 
     # Title-case and truncate
