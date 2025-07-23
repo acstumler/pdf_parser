@@ -63,32 +63,26 @@ def extract_date_from_block(block):
 
 def parse_transaction_block(block, source_account, start_date, end_date):
     if not block or len(block) < 2:
-        print(f"[SKIPPED] Too few lines in block: {block}")
         return None
 
     date_obj = extract_date_from_block(block)
     if not date_obj or not (start_date <= date_obj <= end_date):
-        print(f"[SKIPPED] Block outside date range: {block[0]}")
         return None
     date_str = date_obj.strftime("%m/%d/%Y")
 
     full_block = " ".join(block)
-    # Accept amounts with or without dollar sign
     amount_match = re.search(r"-?\$?\d{1,3}(?:,\d{3})*\.\d{2}", full_block)
     if not amount_match:
-        print(f"[SKIPPED] No valid amount found in block: {block}")
         return None
 
     try:
         cleaned = amount_match.group().replace("$", "").replace(",", "")
         amount = float(cleaned)
     except:
-        print(f"[SKIPPED] Could not parse amount from: {amount_match.group()}")
         return None
 
     memo_line = next((line for line in block[1:] if re.search(r"[A-Za-z]{2,}", line)), "").strip()
     if not memo_line:
-        print(f"[SKIPPED] No memo found in block: {block}")
         return None
 
     if "payment" in memo_line.lower():
@@ -123,5 +117,19 @@ def extract_transactions(text_lines, learned_memory=None):
         if tx:
             transactions.append(tx)
 
-    print(f"[INFO] Parsed {len(transactions)} valid transactions")
-    return {"transactions": transactions}
+    print(f"[INFO] Parsed {len(transactions)} raw transactions before deduplication")
+
+    # Deduplicate
+    unique_fingerprints = set()
+    deduped_transactions = []
+
+    for txn in transactions:
+        fingerprint = f"{txn['date']}|{txn['memo'].strip().lower()}|{txn['amount']:.2f}|{txn['source']}"
+        if fingerprint not in unique_fingerprints:
+            deduped_transactions.append(txn)
+            unique_fingerprints.add(fingerprint)
+        else:
+            print(f"[SKIPPED] Duplicate transaction: {fingerprint}")
+
+    print(f"[INFO] Deduplicated to {len(deduped_transactions)} unique transactions")
+    return {"transactions": deduped_transactions}
