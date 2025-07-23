@@ -82,7 +82,8 @@ def parse_transaction_block(block, source_account, start_date, end_date):
         return None
 
     memo_line = next((line for line in block[1:] if re.search(r"[A-Za-z]{2,}", line)), "").strip()
-    if not memo_line:
+    if not memo_line or "continued on next page" in memo_line.lower():
+        print(f"[SKIPPED] Ignored memo line: {memo_line}")
         return None
 
     if "payment" in memo_line.lower():
@@ -112,24 +113,18 @@ def extract_transactions(text_lines, learned_memory=None):
     print(f"[INFO] Found {len(blocks)} candidate blocks")
 
     transactions = []
+    block_hashes = set()
+
     for block in blocks:
+        block_key = "|".join(block).strip().lower()
+        if block_key in block_hashes:
+            print(f"[SKIPPED] Duplicate block detected")
+            continue
+        block_hashes.add(block_key)
+
         tx = parse_transaction_block(block, source_account, start_date, closing_date)
         if tx:
             transactions.append(tx)
 
-    print(f"[INFO] Parsed {len(transactions)} raw transactions before deduplication")
-
-    # Deduplicate
-    unique_fingerprints = set()
-    deduped_transactions = []
-
-    for txn in transactions:
-        fingerprint = f"{txn['date']}|{txn['memo'].strip().lower()}|{txn['amount']:.2f}|{txn['source']}"
-        if fingerprint not in unique_fingerprints:
-            deduped_transactions.append(txn)
-            unique_fingerprints.add(fingerprint)
-        else:
-            print(f"[SKIPPED] Duplicate transaction: {fingerprint}")
-
-    print(f"[INFO] Deduplicated to {len(deduped_transactions)} unique transactions")
-    return {"transactions": deduped_transactions}
+    print(f"[INFO] Parsed {len(transactions)} unique transactions")
+    return {"transactions": transactions}
