@@ -8,7 +8,7 @@ from pytesseract import Output
 import tempfile
 import os
 from io import BytesIO
-from parse import extract_transactions
+from semantic_extractor import extract_transactions  # <-- ✅ correct import
 
 app = FastAPI()
 
@@ -73,7 +73,7 @@ async def parse_pdf(file: UploadFile = File(...)):
         text_lines = extract_text_lines_from_pdf(file_buffer)
         print(f"[INFO] Extracted {len(text_lines)} lines from text layer")
 
-        result = extract_transactions(text_lines)
+        result = extract_transactions(text_lines)  # ✅ correct usage
 
         if not result.get("transactions"):
             print("[INFO] No transactions from text. Trying OCR fallback.")
