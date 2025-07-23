@@ -1,7 +1,9 @@
 import re
 
 def clean_vendor_name(memo_raw):
-    # Uppercase and normalize
+    if not memo_raw:
+        return ""
+
     memo = memo_raw.upper()
 
     # Remove phone numbers

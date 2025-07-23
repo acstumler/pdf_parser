@@ -1,158 +1,83 @@
+import pdfplumber
 import re
 from dateutil import parser
 from datetime import datetime, timedelta
-from typing import Optional
-
-# Known junk phrases in memo blocks
-EXCLUDE_MEMO_PATTERNS = [
-    "continued on", "detail continued", "cash advance", "closing date",
-    "account ending", "payment due", "fees", "see page", "pay over time"
-]
+from utils.clean_vendor_name import clean_vendor_name
 
 def extract_source_account(text_lines):
     for line in text_lines:
         if "account ending" in line.lower():
-            match = re.search(r"(account ending\s+)?(\d{4,6})", line, re.IGNORECASE)
+            match = re.search(r"account ending\s*(\d{4,6})", line, re.IGNORECASE)
             if match:
-                return f"AMEX {match.group(2)}"
-    return "Unknown"
+                return f"AMEX {match.group(1)}"
+    return "Unknown Source"
 
-def extract_closing_date(text_lines) -> Optional[datetime]:
-    for line in text_lines:
-        if "closing" in line.lower() and "date" in line.lower():
-            print(f"[DEBUG] Scanning for closing date in: {line}")
-            match = re.search(r"(\d{1,2}/\d{1,2}/\d{2,4})", line)
-            if match:
-                try:
-                    parsed = parser.parse(match.group(1)).date()
-                    print(f"[INFO] Closing date parsed successfully: {parsed}")
-                    return parsed
-                except Exception as e:
-                    print(f"[ERROR] Failed to parse closing date from line: '{line}' → {e}")
-    print("[WARNING] No matching line found for closing date")
-    return None
+def group_words_by_y(words, y_tolerance=3):
+    lines = {}
+    for word in words:
+        y = round(word['top'])
+        line_key = next((key for key in lines if abs(key - y) <= y_tolerance), y)
+        lines.setdefault(line_key, []).append(word)
+    return [sorted(line, key=lambda w: w['x0']) for _, line in sorted(lines.items())]
 
-def build_candidate_blocks(text_lines):
-    blocks = []
-    current_block = []
-
-    for line in text_lines:
-        if isinstance(line, dict):
-            text = line.get("text", "").strip()
-        else:
-            text = line.strip()
-
-        if not text:
-            continue
-
-        if re.match(r"^\d{1,2}/\d{1,2}/\d{2,4}", text):
-            if current_block:
-                blocks.append(current_block)
-            current_block = [text]
-        elif current_block:
-            current_block.append(text)
-
-    if current_block:
-        blocks.append(current_block)
-    return blocks
-
-def extract_date_from_block(block):
-    if not block:
-        return None
-    date_match = re.match(r"^\d{1,2}/\d{1,2}/\d{2,4}", block[0])
-    if not date_match:
-        return None
+def parse_amount(text):
     try:
-        return parser.parse(date_match.group(0)).date()
+        text = text.replace("$", "").replace(",", "").strip()
+        return float(text)
     except:
         return None
 
-def is_junk_memo(memo):
-    memo_lower = memo.lower()
-    if any(pat in memo_lower for pat in EXCLUDE_MEMO_PATTERNS):
-        return True
-    if re.fullmatch(r"\d{3}[-\s]?\d{3}[-\s]?\d{4}", memo):  # phone numbers
-        return True
-    if not re.search(r"[a-zA-Z]{3,}", memo):  # must have real letters
-        return True
-    return False
-
-def parse_transaction_block(block, source_account, start_date, end_date, seen_fingerprints):
-    if not block or len(block) < 2:
-        return None
-
-    date_obj = extract_date_from_block(block)
-    if not date_obj or not (start_date <= date_obj <= end_date):
-        return None
-    date_str = date_obj.strftime("%m/%d/%Y")
-
-    full_block = " ".join(block)
-    amount_match = re.search(r"-?\$?\d{1,3}(?:,\d{3})*\.\d{2}", full_block)
-    if not amount_match:
-        return None
-
+def extract_date(text):
     try:
-        cleaned = amount_match.group().replace("$", "").replace(",", "")
-        amount = float(cleaned)
+        return parser.parse(text).strftime("%m/%d/%Y")
     except:
         return None
 
-    # Memo filter: pick longest line that passes junk rules
-    memo_candidates = [
-        line.strip()
-        for line in block[1:]
-        if len(line.strip()) > 3 and not is_junk_memo(line.strip())
-    ]
-
-    memo_line = max(memo_candidates, key=len) if memo_candidates else ""
-
-    if not memo_line:
-        print(f"[SKIPPED] Memo invalid: {block}")
-        return None
-
-    if "payment" in memo_line.lower() or "thank you" in memo_line.lower():
-        amount = -abs(amount)
-
-    # Use strict fingerprint only for short blocks
-    use_fingerprint = len(block) <= 3 or len(memo_line) >= 12
-    fingerprint = f"{date_str}|{memo_line.strip().lower()}|{amount:.2f}|{source_account}"
-
-    if use_fingerprint and fingerprint in seen_fingerprints:
-        print(f"[SKIPPED] Duplicate fingerprint: {fingerprint}")
-        return None
-
-    seen_fingerprints.add(fingerprint)
-
-    return {
-        "date": date_str,
-        "memo": memo_line,
-        "amount": amount,
-        "source": source_account
-    }
-
-def extract_transactions(text_lines, learned_memory=None):
-    if learned_memory is None:
-        learned_memory = {}
-
-    closing_date = extract_closing_date(text_lines)
-    if not closing_date:
-        print("[WARNING] No closing date found. Using fallback range.")
-        closing_date = datetime.today().date()
-
-    start_date = closing_date - timedelta(days=45)
-    print(f"[INFO] Enforcing date filter: Start = {start_date}, End = {closing_date}")
-
-    source_account = extract_source_account(text_lines)
-    blocks = build_candidate_blocks(text_lines)
-    print(f"[INFO] Found {len(blocks)} candidate blocks")
-
-    seen_fingerprints = set()
+def extract_transactions_from_pdf(file_path):
     transactions = []
+    seen_fingerprints = set()
+    with pdfplumber.open(file_path) as pdf:
+        raw_text = []
+        for page in pdf.pages:
+            extracted = page.extract_text()
+            if extracted:
+                raw_text += extracted.split('\n')
 
-    for block in blocks:
-        tx = parse_transaction_block(block, source_account, start_date, closing_date, seen_fingerprints)
-        if tx:
-            transactions.append(tx)
+        source_account = extract_source_account(raw_text)
 
-    print(f"[INFO] Final parsed transactions: {len(transactions)}")
+        for page in pdf.pages:
+            words = page.extract_words(extra_attrs=["x0", "top", "x1", "bottom"])
+            lines = group_words_by_y(words)
+
+            for line in lines:
+                if len(line) < 3:
+                    continue
+
+                left = line[0]['text']
+                right = line[-1]['text']
+                middle = " ".join(w['text'] for w in line[1:-1])
+
+                date = extract_date(left)
+                amount = parse_amount(right)
+                memo = clean_vendor_name(middle)
+
+                if not (date and amount):
+                    continue
+
+                fingerprint = f"{date}|{memo.lower()}|{amount:.2f}|{source_account}"
+                if fingerprint in seen_fingerprints:
+                    continue
+                seen_fingerprints.add(fingerprint)
+
+                if any(kw in memo.lower() for kw in ["thank you", "payment"]):
+                    amount = -abs(amount)
+
+                transactions.append({
+                    "date": date,
+                    "memo": memo,
+                    "account": "7090 - Uncategorized Expense",
+                    "source": source_account,
+                    "amount": amount
+                })
+
     return {"transactions": transactions}
