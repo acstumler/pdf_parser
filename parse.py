@@ -1,18 +1,11 @@
-import fitz  # PyMuPDF
+import io
 import pdfplumber
-from fastapi import UploadFile
-from typing import List
-from semantic_extractor import extract_transactions
+from semantic_extractor import extract_transactions_from_text
 
-async def parse_pdf(file: UploadFile) -> List[dict]:
-    # Use pdfplumber to extract text from all pages
-    all_lines = []
-    with pdfplumber.open(file.file) as pdf:
+def extract_transactions(pdf_bytes):
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        text_lines = []
         for page in pdf.pages:
-            text = page.extract_text()
-            if text:
-                lines = [line.strip() for line in text.split('\n') if line.strip()]
-                all_lines.extend(lines)
-
-    transactions = extract_transactions(all_lines)
-    return transactions
+            lines = page.extract_text().split('\n')
+            text_lines.extend([line.strip() for line in lines if line.strip()])
+    return extract_transactions_from_text(text_lines)
