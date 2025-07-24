@@ -1,94 +1,81 @@
 import re
-import pytesseract
-from datetime import datetime, timedelta
-from pdf2image import convert_from_path
+import fitz  # PyMuPDF
 import pdfplumber
-from dateutil import parser as date_parser
-from clean_vendor_name import clean_vendor_name
+from datetime import datetime, timedelta
+from utils.clean_vendor_name import clean_vendor_name
 
-def extract_closing_date(text):
-    match = re.search(r"(?:Closing Date|Closing Balance Date|Statement Date|Closing\s+Date)[^\d]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})", text, re.IGNORECASE)
+def extract_statement_period(text):
+    """
+    Extracts the closing date from the PDF header using MM/DD/YY format.
+    """
+    match = re.search(r"Closing Date\s+(\d{1,2}/\d{1,2}/\d{2})", text)
     if match:
         try:
-            return datetime.strptime(match.group(1), "%m/%d/%Y")
+            closing_date = datetime.strptime(match.group(1), "%m/%d/%y")
+            return closing_date
         except ValueError:
-            try:
-                return datetime.strptime(match.group(1), "%m/%d/%y")
-            except ValueError:
-                pass
-    # fallback: latest detected date in text
-    all_dates = re.findall(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", text)
-    parsed_dates = []
-    for d in all_dates:
-        try:
-            parsed_dates.append(date_parser.parse(d))
-        except:
-            continue
-    return max(parsed_dates) if parsed_dates else datetime.today()
+            pass
+    return None
 
-def ocr_text_from_pdf(pdf_path):
-    images = convert_from_path(pdf_path)
-    ocr_text = ""
-    for img in images:
-        text = pytesseract.image_to_string(img)
-        ocr_text += text + "\n"
-    return ocr_text
+def extract_account_source(text):
+    """
+    Extracts account source (e.g. AMEX 61005) from statement header.
+    """
+    match = re.search(r"Account Ending\s+(\d{1,6})", text)
+    if match:
+        return f"AMEX {match.group(1)}"
+    return "Unknown"
 
-def extract_transactions(pdf_path):
-    with pdfplumber.open(pdf_path) as pdf:
-        text_blocks = []
-        for page in pdf.pages:
-            raw = page.extract_text()
-            if raw:
-                text_blocks.append(raw)
-
-    text_content = "\n".join(text_blocks)
-    ocr_content = ocr_text_from_pdf(pdf_path)
-
-    combined_lines = list(set((text_content + "\n" + ocr_content).splitlines()))
-
-    closing_date = extract_closing_date("\n".join(combined_lines))
-    start_date = closing_date - timedelta(days=60)
-
+def extract_transactions_from_text(text, source, closing_date):
+    lines = text.split("\n")
     transactions = []
+    seen = set()
+    start_date = closing_date - timedelta(days=90)
 
-    for line in combined_lines:
-        line = line.strip()
-
-        match = re.match(r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+(.+?)\s+\$?(-?\(?[\d,]+\.\d{2}\)?)", line)
-        if not match:
-            continue
-
-        raw_date, raw_memo, raw_amount = match.groups()
-
-        try:
-            txn_date = date_parser.parse(raw_date)
-            if not (start_date <= txn_date <= closing_date):
+    for line in lines:
+        match = re.search(r"(\d{1,2}/\d{1,2}/\d{2}).*?\$?(-?\d{1,3}(?:,\d{3})*(?:\.\d{2})?)", line)
+        if match:
+            try:
+                raw_date = match.group(1)
+                date_obj = datetime.strptime(raw_date, "%m/%d/%y")
+                if not (start_date <= date_obj <= closing_date):
+                    continue
+                date = date_obj.strftime("%m/%d/%y")
+                amount = float(match.group(2).replace(",", ""))
+                memo = re.sub(r"\s+", " ", line).strip()
+                if len(memo) < 20 or memo in seen:
+                    continue
+                seen.add(memo)
+                vendor = clean_vendor_name(memo)
+                transactions.append({
+                    "date": date,
+                    "memo": vendor,
+                    "account": "Unknown",  # classification skipped
+                    "source": source,
+                    "amount": f"${amount:,.2f}"
+                })
+            except Exception:
                 continue
-            formatted_date = txn_date.strftime("%m/%d/%y")
-        except Exception:
-            continue
+    return transactions
 
-        try:
-            cleaned_amount = raw_amount.replace(",", "").replace("(", "-").replace(")", "")
-            amount = round(float(cleaned_amount), 2)
-        except ValueError:
-            continue
+def extract_transactions(pdf_path: str):
+    with pdfplumber.open(pdf_path) as pdf:
+        raw_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
 
-        memo = clean_vendor_name(raw_memo)
+    closing_date = extract_statement_period(raw_text)
+    if not closing_date:
+        raise ValueError("Unable to extract closing date")
 
-        # Static placeholder for now (no AI or keyword classification)
-        account = "Uncategorized – Expense"
-        source = "UNKNOWN"
+    source = extract_account_source(raw_text)
 
-        transaction = {
-            "date": formatted_date,
-            "memo": memo,
-            "account": account,
-            "source": source,
-            "amount": f"${abs(amount):,.2f}" if amount >= 0 else f"(${abs(amount):,.2f})"
-        }
+    # OCR fallback
+    ocr_text = ""
+    try:
+        for page in fitz.open(pdf_path):
+            ocr_text += page.get_text()
+    except Exception:
+        pass
 
-        transactions.append(transaction)
-
+    combined_text = raw_text + "\n" + ocr_text
+    transactions = extract_transactions_from_text(combined_text, source, closing_date)
     return transactions
