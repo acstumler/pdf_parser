@@ -1,6 +1,0 @@
-services:
-  - type: web
-    name: lighthouse-pdf-parser
-    env: docker
-    dockerfilePath: ./pdf_parser/Dockerfile
-    autoDeploy: true
