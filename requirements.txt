@@ -7,3 +7,4 @@ pillow
 python-dateutil>=2.8.2
 PyMuPDF>=1.23.7
 pdf2image
+PyPDF2
