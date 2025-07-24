@@ -1,11 +1,14 @@
 import io
 import re
+import shutil
 import pdfplumber
 import pytesseract
 from pdf2image import convert_from_bytes
 from datetime import datetime, timedelta
 from dateutil import parser
 from utils.clean_vendor_name import clean_vendor_name
+
+print(f"[DEBUG] Tesseract path: {shutil.which('tesseract')}")  # Confirm runtime OCR access
 
 def extract_with_pdfplumber(pdf_bytes):
     text_lines = []
