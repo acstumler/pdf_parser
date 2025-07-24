@@ -1,180 +1,94 @@
-import io
 import re
-import shutil
-import pdfplumber
-import pytesseract
-from pdf2image import convert_from_bytes
+import logging
 from datetime import datetime, timedelta
-from dateutil import parser
-from utils.clean_vendor_name import clean_vendor_name
+from clean_vendor_name import clean_vendor_name
 
-print(f"[DEBUG] Tesseract path: {shutil.which('tesseract')}")  # Confirm runtime OCR access
+logger = logging.getLogger(__name__)
 
-def extract_with_pdfplumber(pdf_bytes):
-    text_lines = []
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text()
-            if text:
-                lines = text.split('\n')
-                text_lines.extend([line.strip() for line in lines if line.strip()])
-    return text_lines
+DATE_REGEX = re.compile(r"\d{2}/\d{2}/\d{2}")
+AMOUNT_REGEX = re.compile(r"\(?-?\$?\d{1,3}(,\d{3})*(\.\d{2})?\)?")
 
-def extract_with_ocr(pdf_bytes):
-    ocr_lines = []
+def is_valid_date(text):
     try:
-        images = convert_from_bytes(pdf_bytes)
-        for img in images:
-            text = pytesseract.image_to_string(img)
-            lines = text.split('\n')
-            ocr_lines.extend([line.strip() for line in lines if line.strip()])
-    except Exception as e:
-        print(f"[OCR ERROR] {e}")
-    return ocr_lines
-
-def deduplicate_lines(lines):
-    seen = set()
-    unique = []
-    for line in lines:
-        fingerprint = line.lower().strip()
-        if fingerprint not in seen:
-            unique.append(line)
-            seen.add(fingerprint)
-    return unique
-
-EXCLUDE_MEMO_PATTERNS = [
-    "continued on", "detail continued", "cash advance", "closing date",
-    "account ending", "payment due", "fees", "see page", "pay over time"
-]
-
-def extract_source_account(text_lines):
-    for line in text_lines:
-        if "account ending" in line.lower():
-            match = re.search(r"(account ending\s+)?(\d{4,6})", line, re.IGNORECASE)
-            if match:
-                return f"AMEX {match.group(2)}"
-    return "Unknown Source"
-
-def extract_closing_date(text_lines):
-    for line in text_lines:
-        if "closing" in line.lower() and "date" in line.lower():
-            match = re.search(r"(\d{1,2}/\d{1,2}/\d{2,4})", line)
-            if match:
-                try:
-                    return parser.parse(match.group(1)).date()
-                except:
-                    continue
-    return None
-
-def build_candidate_blocks(text_lines):
-    blocks = []
-    current_block = []
-    for line in text_lines:
-        if re.match(r"^\d{1,2}/\d{1,2}/\d{2,4}", line):
-            if current_block:
-                blocks.append(current_block)
-            current_block = [line]
-        elif current_block:
-            current_block.append(line)
-    if current_block:
-        blocks.append(current_block)
-    return blocks
-
-def extract_date(block):
-    try:
-        return parser.parse(block[0]).date()
-    except:
-        return None
-
-def parse_amount(block):
-    match = re.search(r"-?\$?\d{1,3}(?:,\d{3})*\.\d{2}", " ".join(block))
-    if match:
-        cleaned = match.group().replace("$", "").replace(",", "")
-        try:
-            return float(cleaned)
-        except:
-            return None
-    return None
-
-def extract_memo(block):
-    candidates = [
-        line.strip() for line in block[1:]
-        if len(line.strip()) > 3 and not is_junk_memo(line.strip())
-    ]
-    return max(candidates, key=len) if candidates else ""
-
-def is_junk_memo(memo):
-    lower = memo.lower()
-    if any(p in lower for p in EXCLUDE_MEMO_PATTERNS):
+        datetime.strptime(text.strip(), "%m/%d/%y")
         return True
-    if re.fullmatch(r"\d{3}[-\s]?\d{3}[-\s]?\d{4}", memo):
-        return True
-    if not re.search(r"[a-zA-Z]{3,}", memo):
-        return True
-    return False
+    except Exception:
+        return False
 
-def extract_transactions_from_text(text_lines):
-    transactions = []
-    seen_fingerprints = set()
+def is_valid_amount(text):
+    return bool(AMOUNT_REGEX.search(text.strip()))
 
-    end_date = extract_closing_date(text_lines) or datetime.today().date()
-    start_date = end_date - timedelta(days=60)
-    print(f"[INFO] Enforcing date filter: Start = {start_date}, End = {end_date}")
+def parse_amount(text):
+    raw = re.sub(r"[^\d.\-()]", "", text)
+    if "(" in raw and ")" in raw:
+        return -float(raw.replace("(", "").replace(")", ""))
+    return float(raw)
 
-    source = extract_source_account(text_lines)
-    blocks = build_candidate_blocks(text_lines)
-    print(f"[INFO] Found {len(blocks)} candidate blocks")
+def clean_memo(text):
+    return re.sub(r"[^\w\s&\-\'/,.*@#]", "", text).strip()
+
+def extract_transactions_from_text(text, learned_memory={}):
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    logger.info(f"[INFO] Total combined lines: {len(lines)}")
+
+    blocks = build_candidate_blocks(lines)
+    logger.info(f"[INFO] Found {len(blocks)} candidate blocks")
+
+    parsed_transactions = []
+    seen_memos = set()
+    today = datetime.today()
+    min_date = today - timedelta(days=60)
 
     for block in blocks:
-        if len(block) < 2:
-            print("[SKIP] Block too short:", block)
+        if len(block) != 3:
             continue
 
-        date_obj = extract_date(block)
-        if not date_obj:
-            print("[SKIP] Could not parse date:", block[0])
-            continue
-        if not (start_date <= date_obj <= end_date):
-            print(f"[SKIP] Date out of range: {date_obj} not in {start_date}–{end_date}")
+        date_raw, memo_raw, amount_raw = block
+        if not (is_valid_date(date_raw) and is_valid_amount(amount_raw)):
             continue
 
-        amount = parse_amount(block)
-        if amount is None:
-            print("[SKIP] No valid amount found:", block)
-            continue
+        try:
+            tx_date = datetime.strptime(date_raw, "%m/%d/%y")
+            if tx_date < min_date or tx_date > today:
+                logger.info(f"[SKIP] Date out of range: {tx_date.strftime('%Y-%m-%d')}")
+                continue
 
-        memo = extract_memo(block)
-        if not memo:
-            print("[SKIP] No valid memo found:", block)
-            continue
+            memo = clean_memo(memo_raw)
+            amount = parse_amount(amount_raw)
+            unique_id = f"{tx_date.isoformat()}_{memo}_{amount}"
+            if unique_id in seen_memos:
+                continue
 
-        date_str = date_obj.strftime("%m/%d/%Y")
+            seen_memos.add(unique_id)
 
-        if "payment" in memo.lower() or "thank you" in memo.lower():
-            amount = -abs(amount)
+            source = extract_account_source(text)
+            parsed_transactions.append({
+                "date": tx_date.strftime("%Y-%m-%d"),
+                "memo": memo,
+                "amount": amount,
+                "source": source
+            })
 
-        fingerprint = f"{date_str}|{memo.lower()}|{amount:.2f}|{source}"
-        if fingerprint in seen_fingerprints:
-            print(f"[SKIPPED] Duplicate fingerprint: {fingerprint}")
-            continue
-        seen_fingerprints.add(fingerprint)
+        except Exception as e:
+            logger.warning(f"[SKIP] Failed to parse block: {block} → {e}")
 
-        transactions.append({
-            "date": date_str,
-            "memo": clean_vendor_name(memo),
-            "account": "7090 - Uncategorized Expense",
-            "source": source,
-            "amount": amount
-        })
+    logger.info(f"[INFO] Final parsed transactions: {len(parsed_transactions)}")
+    return parsed_transactions
 
-    print(f"[INFO] Final parsed transactions: {len(transactions)}")
-    return { "transactions": transactions }
+def build_candidate_blocks(lines):
+    blocks = []
+    i = 0
+    while i <= len(lines) - 3:
+        line1, line2, line3 = lines[i].strip(), lines[i + 1].strip(), lines[i + 2].strip()
+        if is_valid_date(line1) and is_valid_amount(line3):
+            blocks.append([line1, line2, line3])
+            i += 3
+        else:
+            i += 1
+    return blocks
 
-def extract_transactions(pdf_bytes):
-    print("[INFO] Extracting with pdfplumber + OCR")
-    text_lines = extract_with_pdfplumber(pdf_bytes)
-    ocr_lines = extract_with_ocr(pdf_bytes)
-    combined = text_lines + ocr_lines
-    deduped = deduplicate_lines(combined)
-    print(f"[INFO] Total combined lines: {len(deduped)}")
-    return extract_transactions_from_text(deduped)
+def extract_account_source(text):
+    match = re.search(r"(AMEX|CHASE|BANK|CAPITAL ONE|WELLS FARGO).*?(\d{4,6})", text, re.IGNORECASE)
+    if match:
+        return f"{match.group(1).upper()} {match.group(2)}"
+    return "Unknown"
