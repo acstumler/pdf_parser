@@ -1,6 +1,6 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from raw_parser import parse_pdf  # <- NOW POINTING TO THE RIGHT FILE
+from raw_parser import parse_pdf  # Ensure this imports from raw_parser.py
 import os
 
 app = FastAPI()
@@ -25,16 +25,16 @@ async def parse_pdf_endpoint(file: UploadFile = File(...)):
         with open(temp_filename, "wb") as f:
             f.write(file_bytes)
 
-        print(f"📥 File written to {temp_filename}")
-        results = parse_pdf(temp_filename)
+        print(f"File written to {temp_filename}")
+        response_data = parse_pdf(temp_filename)
 
         try:
             os.remove(temp_filename)
         except Exception as cleanup_err:
-            print(f"⚠️ Could not delete temp file: {cleanup_err}")
+            print(f"Could not delete temp file: {cleanup_err}")
 
-        return { "transactions": results }
+        return response_data  # ✅ Do not wrap again; already returns {"transactions": [...]}
 
     except Exception as e:
-        print(f"❌ Backend Exception: {e}")
+        print(f"Backend Exception: {e}")
         return { "error": str(e), "transactions": [] }
