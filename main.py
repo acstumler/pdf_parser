@@ -1,6 +1,7 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from parser_engine import extract_transactions  # updated to match renamed file
+from parser_engine import extract_transactions
+from io import BytesIO
 
 app = FastAPI()
 
@@ -20,7 +21,9 @@ async def root():
 async def parse_pdf(file: UploadFile = File(...)):
     try:
         file_bytes = await file.read()
-        results = extract_transactions(file_bytes)
+        file_stream = BytesIO(file_bytes)
+        file_stream.seek(0)
+        results = extract_transactions(file_stream)
         return results
     except Exception as e:
         return {"error": str(e)}
