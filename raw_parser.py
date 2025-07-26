@@ -85,11 +85,13 @@ def extract_transactions_visual(pdf_path, start_date=None, end_date=None, source
     return transactions
 
 def parse_pdf(path):
-    with open(path, "rb") as f:
-        text = f.read().decode("latin1")  # fallback in case utf-8 fails
+    with pdfplumber.open(path) as pdf:
+        full_text = ""
+        for page in pdf.pages:
+            full_text += page.extract_text() or ""
 
-    start_date, end_date = extract_statement_period(text)
-    source = extract_source_account(text)
+    start_date, end_date = extract_statement_period(full_text)
+    source = extract_source_account(full_text)
     transactions = extract_transactions_visual(path, start_date, end_date, source)
 
     print("DEBUG: Returning parsed transactions")
