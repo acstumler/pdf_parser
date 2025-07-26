@@ -27,7 +27,6 @@ def extract_text_via_ocr(path):
     return full_text
 
 def extract_statement_period(text):
-    # Looks for date ranges like "Oct 28 – Nov 27, 2023" or similar
     date_range_pattern = re.compile(r'([A-Za-z]{3,9})[\s\-–]+(\d{1,2})[\s\-–]+[–\-—][\s\-–]+([A-Za-z]{3,9})[\s\-–]+(\d{1,2}),\s*(\d{4})')
     match = date_range_pattern.search(text)
     if match:
