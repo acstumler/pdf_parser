@@ -6,13 +6,12 @@ from utils.clean_vendor_name import clean_vendor_name
 
 def extract_statement_period(text):
     patterns = [
-        r"Closing Date[:\s]*?(\d{1,2}/\d{1,2}/\d{2,4})",  # handles space, colon, or no separator
-        r"Closing Date(\d{1,2}/\d{1,2}/\d{2,4})",         # handles NO space or colon
+        r"Closing Date[:\s]*?(\d{1,2}/\d{1,2}/\d{2,4})",
+        r"Closing Date(\d{1,2}/\d{1,2}/\d{2,4})",
         r"Period Ending[:\s]*?(\d{1,2}/\d{1,2}/\d{2,4})",
         r"Statement Closing Date[:\s]*?(\d{1,2}/\d{1,2}/\d{2,4})",
         r"Closing Date\s+([A-Za-z]{3,9} \d{1,2}, \d{4})"
     ]
-
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
@@ -29,6 +28,19 @@ def extract_account_source(text):
     if match:
         return f"AMEX {match.group(1)}"
     return "Unknown"
+
+def clean_memo_text(line):
+    memo = re.sub(r"\s+", " ", line).strip()
+    memo = re.sub(r"[^a-zA-Z0-9\s@\-.*']", "", memo)
+    tokens = memo.split()
+    seen = set()
+    deduped = []
+    for token in tokens:
+        t = token.lower()
+        if t not in seen:
+            seen.add(t)
+            deduped.append(token)
+    return " ".join(deduped)
 
 def extract_transactions_from_text(text, source, closing_date):
     lines = text.split("\n")
@@ -60,11 +72,11 @@ def extract_transactions_from_text(text, source, closing_date):
                 raw_amount = match.group(2).replace("(", "-").replace(")", "").replace("$", "").replace(",", "")
                 amount = float(raw_amount)
 
-                memo = re.sub(r"\s+", " ", line).strip()
-                if memo in seen:
+                memo_raw = clean_memo_text(line)
+                if memo_raw in seen:
                     continue
-                seen.add(memo)
-                vendor = clean_vendor_name(memo)
+                seen.add(memo_raw)
+                vendor = clean_vendor_name(memo_raw)
 
                 transaction = {
                     "date": date,
