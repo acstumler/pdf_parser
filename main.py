@@ -1,6 +1,6 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from parser_engine import parse_pdf  # Make sure this points to the correct parser function
+from raw_parser import parse_pdf  # <- NOW POINTING TO THE RIGHT FILE
 import os
 
 app = FastAPI()
@@ -28,7 +28,6 @@ async def parse_pdf_endpoint(file: UploadFile = File(...)):
         print(f"📥 File written to {temp_filename}")
         results = parse_pdf(temp_filename)
 
-        # Optional: clean up the temp file after parsing
         try:
             os.remove(temp_filename)
         except Exception as cleanup_err:
