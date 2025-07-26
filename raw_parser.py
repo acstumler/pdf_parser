@@ -105,6 +105,10 @@ def clean_memo(memo):
 
 def parse_pdf(path):
     text = extract_text_from_pdf(path)
+
+    print("RAW TEXT OUTPUT:")
+    print(text)
+
     start_date, end_date = extract_statement_period(text)
     source = extract_source_account(text)
     transactions = extract_transactions(text, start_date, end_date, source)
