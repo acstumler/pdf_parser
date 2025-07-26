@@ -23,7 +23,7 @@ async def parse_pdf(file: UploadFile = File(...)):
         file_bytes = await file.read()
         file_stream = BytesIO(file_bytes)
         file_stream.seek(0)
-        results = extract_transactions(file_stream)
-        return results
+        results = extract_transactions(file_bytes)
+        return { "transactions": results }
     except Exception as e:
-        return {"error": str(e)}
+        return { "error": str(e) }

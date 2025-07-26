@@ -10,9 +10,6 @@ import pytesseract
 from pdf2image import convert_from_bytes
 
 def extract_statement_period(text):
-    """
-    Tries multiple patterns to find the closing date from the statement text.
-    """
     patterns = [
         r"Closing Date[:\s]+(\d{1,2}/\d{1,2}/\d{2,4})",
         r"Period Ending[:\s]+(\d{1,2}/\d{1,2}/\d{2,4})",
@@ -32,9 +29,6 @@ def extract_statement_period(text):
     return None
 
 def extract_account_source(text):
-    """
-    Extracts account source (e.g. AMEX 61005) from statement header.
-    """
     match = re.search(r"Account Ending\s+(\d{1,6})", text)
     if match:
         return f"AMEX {match.group(1)}"
@@ -57,39 +51,40 @@ def extract_transactions_from_text(text, source, closing_date):
                 date = date_obj.strftime("%m/%d/%Y")
                 amount = float(match.group(2).replace(",", ""))
                 memo = re.sub(r"\s+", " ", line).strip()
-                if len(memo) < 20 or memo in seen:
+                if memo in seen:
                     continue
                 seen.add(memo)
                 vendor = clean_vendor_name(memo)
                 transactions.append({
                     "date": date,
                     "memo": vendor,
-                    "account": "Unknown",  # classification comes later
+                    "account": "Unknown",
                     "source": source,
                     "amount": f"${amount:,.2f}"
                 })
             except Exception:
                 continue
+        else:
+            # DEBUG: log rejected lines
+            print("Rejected line (no match):", line)
+
     return transactions
 
 def extract_text_from_pdf(pdf_bytes):
     text = ""
 
-    # 1. Try pdfplumber
     try:
         with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
             text = "\n".join(page.extract_text() or "" for page in pdf.pages)
     except Exception:
         pass
 
-    # 2. Try PyMuPDF layout text
     if not text.strip():
         try:
             text = "\n".join([page.get_text() for page in fitz.open(stream=pdf_bytes, filetype="pdf")])
         except Exception:
             pass
 
-    # 3. True OCR via image conversion
     if not text.strip():
         try:
             images = convert_from_bytes(pdf_bytes)
@@ -101,6 +96,10 @@ def extract_text_from_pdf(pdf_bytes):
 
 def extract_transactions(pdf_bytes: bytes):
     full_text = extract_text_from_pdf(pdf_bytes)
+
+    print("\n======= EXTRACTED TEXT START =======\n")
+    print(full_text[:5000])
+    print("\n======== EXTRACTED TEXT END ========\n")
 
     closing_date = extract_statement_period(full_text)
     if not closing_date:
