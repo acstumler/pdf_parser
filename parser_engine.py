@@ -1,85 +1,81 @@
 import re
-import fitz  # PyMuPDF
-import pdfplumber
-from datetime import datetime, timedelta
-from utils.clean_vendor_name import clean_vendor_name
+from datetime import datetime
+from .raw_parser import extract_text_blocks
+from .utils.memo_cleaner import clean_memo_text
+from .utils.date_utils import is_within_date_range
+from .utils.ocr_utils import extract_text_with_ocr
 
 
-def extract_statement_period(text):
-    """
-    Extracts the closing date from the PDF header using MM/DD/YY format.
-    """
-    match = re.search(r"Closing Date\s+(\d{1,2}/\d{1,2}/\d{2})", text)
-    if match:
-        try:
-            closing_date = datetime.strptime(match.group(1), "%m/%d/%y")
-            return closing_date
-        except ValueError:
-            pass
-    return None
-
-
-def extract_account_source(text):
-    """
-    Extracts account source (e.g. AMEX 61005) from statement header.
-    """
-    match = re.search(r"Account Ending\s+(\d{1,6})", text)
-    if match:
-        return f"AMEX {match.group(1)}"
-    return "Unknown"
-
-
-def extract_transactions_from_text(text, source, closing_date):
-    lines = text.split("\n")
+def extract_transactions(text: str, learned_memory: dict = {}):
+    print("📄 Beginning structured extraction process")
     transactions = []
-    seen = set()
-    start_date = closing_date - timedelta(days=90)
+
+    # Try OCR fallback if text appears too empty or malformed
+    if len(text.strip().splitlines()) < 10 or "STATEMENT" not in text.upper():
+        print("⚠️ Low confidence in extracted text — attempting OCR fallback")
+        text = extract_text_with_ocr(text)
+
+    lines = text.splitlines()
+    lines = [line.strip() for line in lines if line.strip()]
+    print(f"🧾 Scanning {len(lines)} lines from input...")
+
+    # Extract header info (statement date range and source)
+    statement_source = "Unknown"
+    closing_date = None
 
     for line in lines:
-        match = re.search(r"(\d{1,2}/\d{1,2}/\d{2}).*?\$?(-?\d{1,3}(?:,\d{3})*(?:\.\d{2})?)", line)
-        if match:
+        if match := re.search(r"Account Ending(?:\D*?)(\d{5})", line):
+            statement_source = f"AMEX {match.group(1)}"
+        if match := re.search(r"Closing Date[:\s]*([A-Za-z]{3,9} \d{1,2},? \d{4})", line):
             try:
-                raw_date = match.group(1)
-                date_obj = datetime.strptime(raw_date, "%m/%d/%y")
-                if not (start_date <= date_obj <= closing_date):
-                    continue
-                date = date_obj.strftime("%m/%d/%Y")
-                amount = float(match.group(2).replace(",", ""))
-                memo = re.sub(r"\s+", " ", line).strip()
-                if len(memo) < 20 or memo in seen:
-                    continue
-                seen.add(memo)
-                vendor = clean_vendor_name(memo)
-                transactions.append({
-                    "date": date,
-                    "memo": vendor,
-                    "account": "Unknown",  # classification skipped
-                    "source": source,
-                    "amount": f"${amount:,.2f}"
-                })
-            except Exception:
+                closing_date = datetime.strptime(match.group(1).replace(",", ""), "%B %d %Y")
+                print(f"🗓️ Parsed closing date: {closing_date.strftime('%m/%d/%Y')}")
+            except Exception as e:
+                print(f"⚠️ Failed to parse closing date: {e}")
+
+    transaction_block_pattern = re.compile(
+        r"(?P<date>\d{2}/\d{2}/\d{2,4})\*?\s+(?P<description>.+?)\s+\$?(?P<amount>[-]?\(?\$?\d+[\.,]?\d{0,2}\)?)"
+    )
+
+    for line in lines:
+        print(f"🔍 SCANNING LINE: {line}")
+        match = transaction_block_pattern.search(line)
+        if not match:
+            print(f"❌ REJECTED LINE (NO MATCH): {line}")
+            continue
+
+        date_str = match.group("date")
+        try:
+            parsed_date = datetime.strptime(date_str, "%m/%d/%Y")
+        except ValueError:
+            try:
+                parsed_date = datetime.strptime(date_str, "%m/%d/%y")
+            except ValueError:
+                print(f"❌ Invalid date: {date_str}")
                 continue
-    return transactions
 
+        if closing_date and not is_within_date_range(parsed_date, closing_date):
+            print(f"❌ Outside closing window: {parsed_date.strftime('%m/%d/%Y')}")
+            continue
 
-def extract_transactions(pdf_path: str):
-    with pdfplumber.open(pdf_path) as pdf:
-        raw_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+        raw_memo = match.group("description")
+        cleaned_memo = clean_memo_text(raw_memo)
 
-    closing_date = extract_statement_period(raw_text)
-    if not closing_date:
-        raise ValueError("Unable to extract closing date")
+        raw_amount = match.group("amount")
+        formatted_amount = (
+            f"-${raw_amount.strip('()$')}" if "(" in raw_amount or "-" in raw_amount else f"${raw_amount.strip('$')}"
+        )
 
-    source = extract_account_source(raw_text)
+        transaction = {
+            "date": parsed_date.strftime("%m/%d/%Y"),
+            "memo": cleaned_memo,
+            "account": "Unknown",
+            "source": statement_source,
+            "amount": formatted_amount,
+        }
 
-    # OCR fallback
-    ocr_text = ""
-    try:
-        for page in fitz.open(pdf_path):
-            ocr_text += page.get_text()
-    except Exception:
-        pass
+        print(f"✅ MATCHED TRANSACTION: {transaction}")
+        transactions.append(transaction)
 
-    combined_text = raw_text + "\n" + ocr_text
-    transactions = extract_transactions_from_text(combined_text, source, closing_date)
+    print(f"📊 Parsed {len(transactions)} transactions.")
     return transactions
