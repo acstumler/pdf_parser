@@ -34,10 +34,17 @@ def clean_memo(memo):
 
 def extract_transactions_visual(pdf_path, start_date=None, end_date=None, source="Unknown"):
     transactions = []
+    print(f"Opening {pdf_path}...")
 
     with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
+        print(f"PDF has {len(pdf.pages)} pages")
+        for i, page in enumerate(pdf.pages):
             words = page.extract_words(x_tolerance=2, y_tolerance=1)
+            print(f"Page {i+1} has {len(words)} words")
+
+            for word in words[:5]:  # Print first 5 words for diagnostics
+                print(f" - {word}")
+
             lines_by_y = {}
             for word in words:
                 y = round(word["top"])
@@ -46,8 +53,7 @@ def extract_transactions_visual(pdf_path, start_date=None, end_date=None, source
             for y, words_on_line in sorted(lines_by_y.items()):
                 sorted_words = sorted(words_on_line, key=lambda w: w["x0"])
                 text_line = " ".join(w["text"] for w in sorted_words)
-
-                print(f"LINE {y}: {text_line}")  # <-- debug line output
+                print(f"LINE {y}: {text_line}")  # Print each line
 
                 match = re.search(
                     r'(\d{2}/\d{2}/\d{2,4})\s+(.+?)\s+(-?\(?[\d,]+\.\d{2}\)?)$',
