@@ -46,6 +46,9 @@ def extract_transactions_visual(pdf_path, start_date=None, end_date=None, source
             for y, words_on_line in sorted(lines_by_y.items()):
                 sorted_words = sorted(words_on_line, key=lambda w: w["x0"])
                 text_line = " ".join(w["text"] for w in sorted_words)
+
+                print(f"LINE {y}: {text_line}")  # <-- debug line output
+
                 match = re.search(
                     r'(\d{2}/\d{2}/\d{2,4})\s+(.+?)\s+(-?\(?[\d,]+\.\d{2}\)?)$',
                     text_line
