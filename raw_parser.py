@@ -40,22 +40,20 @@ def extract_statement_period(text):
     return None, None
 
 def extract_source_account(text):
-    match = re.search(r'Account Ending[\s\-]*?(\d{5})', text, re.IGNORECASE)
+    match = re.search(r'Account Ending[\s\-]*?(\d{4,6})', text, re.IGNORECASE)
     if match:
         return f"AMEX {match.group(1)}"
     return "Unknown"
 
 def extract_transactions(text, start_date=None, end_date=None, source="Unknown"):
     transaction_pattern = re.compile(
-        r'(\d{2}/\d{2}/\d{2,4})\s+([^\n]*?)\s+\$?(-?\(?\d{1,4}(?:,\d{3})*(?:\.\d{2})?\)?)',
+        r'(\d{2}/\d{2}/\d{2,4})\s+(.+?)\s+\$?(-?\(?\d{1,4}(?:,\d{3})*(?:\.\d{2})?\)?)',
         re.MULTILINE
     )
     matches = transaction_pattern.findall(text)
     transactions = []
 
-    for match in matches:
-        raw_date, raw_memo, raw_amount = match
-
+    for raw_date, raw_memo, raw_amount in matches:
         try:
             date_obj = datetime.strptime(raw_date, "%m/%d/%Y")
         except ValueError:
@@ -64,9 +62,8 @@ def extract_transactions(text, start_date=None, end_date=None, source="Unknown")
             except:
                 continue
 
-        if start_date and end_date:
-            if not (start_date <= date_obj <= end_date):
-                continue
+        if start_date and end_date and not (start_date <= date_obj <= end_date):
+            continue
 
         amount_clean = raw_amount.replace(',', '').replace('(', '-').replace(')', '')
         try:
@@ -74,11 +71,11 @@ def extract_transactions(text, start_date=None, end_date=None, source="Unknown")
         except:
             continue
 
-        memo_cleaned = clean_memo(raw_memo)
+        cleaned_memo = clean_memo(raw_memo)
 
         transactions.append({
             "date": date_obj.strftime("%m/%d/%Y"),
-            "memo": memo_cleaned,
+            "memo": cleaned_memo,
             "account": "Unknown",
             "source": source,
             "amount": amount_float
@@ -88,16 +85,16 @@ def extract_transactions(text, start_date=None, end_date=None, source="Unknown")
 
 def clean_memo(memo):
     memo = memo.strip()
-    memo = re.sub(r'\*+', '', memo)
-    memo = re.sub(r'\d{4,}', '', memo)  # Remove long numeric codes
-    memo = re.sub(r'[^\w\s&.,/-]', '', memo)
-    words = memo.split()
-    filtered = [w for w in words if w.lower() not in ("aplpay", "tst", "store", "inc", "llc", "co")]
-    return " ".join(filtered).title()
+    memo = re.sub(r'\\*+', '', memo)
+    memo = re.sub(r'\\d{4,}', '', memo)
+    memo = re.sub(r'[^\\w\\s&.,/-]', '', memo)
+    stopwords = {"aplpay", "tst", "store", "inc", "llc", "co", "payment", "continued", "memo", "auth", "ref"}
+    words = [w for w in memo.split() if w.lower() not in stopwords]
+    return " ".join(words).title()
 
 def parse_pdf(path):
     text = extract_text_from_pdf(path)
     start_date, end_date = extract_statement_period(text)
     source = extract_source_account(text)
     transactions = extract_transactions(text, start_date, end_date, source)
-    return transactions
+    return {"transactions": transactions}
