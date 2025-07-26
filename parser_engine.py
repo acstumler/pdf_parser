@@ -42,12 +42,13 @@ def extract_transactions_from_text(text, source, closing_date):
 
     for line in lines:
         line = line.strip()
+        print("🔍 SCANNING LINE:", line)
         if not line:
             continue
 
-        match = transaction_regex.search(line)
-        if match:
-            try:
+        try:
+            match = transaction_regex.search(line)
+            if match:
                 raw_date = match.group(1)
                 date_obj = datetime.strptime(raw_date, "%m/%d/%y") if len(raw_date.split('/')[-1]) == 2 else datetime.strptime(raw_date, "%m/%d/%Y")
                 if not (start_date <= date_obj <= closing_date):
@@ -72,13 +73,15 @@ def extract_transactions_from_text(text, source, closing_date):
                     "amount": f"${amount:,.2f}"
                 }
 
-                print("✅ Matched transaction:", transaction)
+                print("✅ MATCHED TRANSACTION:", transaction)
                 transactions.append(transaction)
+            else:
+                print("❌ REJECTED LINE (NO MATCH):", line)
 
-            except Exception as e:
-                print("❌ Error parsing line:", line, "| Error:", e)
-        else:
-            print("❌ Rejected line (no match):", line)
+        except Exception as e:
+            import traceback
+            print("❌ ERROR while parsing line:", line)
+            traceback.print_exc()
 
     return transactions
 
