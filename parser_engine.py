@@ -1,20 +1,34 @@
 import re
 import fitz  # PyMuPDF
 import pdfplumber
+from io import BytesIO
 from datetime import datetime, timedelta
 from utils.clean_vendor_name import clean_vendor_name
 
+# OCR support
+import pytesseract
+from pdf2image import convert_from_bytes
+
 def extract_statement_period(text):
     """
-    Extracts the closing date from the PDF header using MM/DD/YY format.
+    Tries multiple patterns to find the closing date from the statement text.
     """
-    match = re.search(r"Closing Date\s+(\d{1,2}/\d{1,2}/\d{2})", text)
-    if match:
-        try:
-            closing_date = datetime.strptime(match.group(1), "%m/%d/%y")
-            return closing_date
-        except ValueError:
-            pass
+    patterns = [
+        r"Closing Date[:\s]+(\d{1,2}/\d{1,2}/\d{2,4})",
+        r"Period Ending[:\s]+(\d{1,2}/\d{1,2}/\d{2,4})",
+        r"Statement Closing Date[:\s]+(\d{1,2}/\d{1,2}/\d{2,4})",
+        r"Closing Date[:\s]+([A-Za-z]{3,9} \d{1,2}, \d{4})"
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            date_str = match.group(1)
+            for fmt in ("%m/%d/%y", "%m/%d/%Y", "%b %d, %Y", "%B %d, %Y"):
+                try:
+                    return datetime.strptime(date_str, fmt)
+                except ValueError:
+                    continue
     return None
 
 def extract_account_source(text):
@@ -40,7 +54,7 @@ def extract_transactions_from_text(text, source, closing_date):
                 date_obj = datetime.strptime(raw_date, "%m/%d/%y")
                 if not (start_date <= date_obj <= closing_date):
                     continue
-                date = date_obj.strftime("%m/%d/%y")
+                date = date_obj.strftime("%m/%d/%Y")
                 amount = float(match.group(2).replace(",", ""))
                 memo = re.sub(r"\s+", " ", line).strip()
                 if len(memo) < 20 or memo in seen:
@@ -50,7 +64,7 @@ def extract_transactions_from_text(text, source, closing_date):
                 transactions.append({
                     "date": date,
                     "memo": vendor,
-                    "account": "Unknown",  # classification skipped
+                    "account": "Unknown",  # classification comes later
                     "source": source,
                     "amount": f"${amount:,.2f}"
                 })
@@ -58,24 +72,41 @@ def extract_transactions_from_text(text, source, closing_date):
                 continue
     return transactions
 
-def extract_transactions(pdf_path: str):
-    with pdfplumber.open(pdf_path) as pdf:
-        raw_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+def extract_text_from_pdf(pdf_bytes):
+    text = ""
 
-    closing_date = extract_statement_period(raw_text)
-    if not closing_date:
-        raise ValueError("Unable to extract closing date")
-
-    source = extract_account_source(raw_text)
-
-    # OCR fallback
-    ocr_text = ""
+    # 1. Try pdfplumber
     try:
-        for page in fitz.open(pdf_path):
-            ocr_text += page.get_text()
+        with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+            text = "\n".join(page.extract_text() or "" for page in pdf.pages)
     except Exception:
         pass
 
-    combined_text = raw_text + "\n" + ocr_text
-    transactions = extract_transactions_from_text(combined_text, source, closing_date)
+    # 2. Try PyMuPDF layout text
+    if not text.strip():
+        try:
+            text = "\n".join([page.get_text() for page in fitz.open(stream=pdf_bytes, filetype="pdf")])
+        except Exception:
+            pass
+
+    # 3. True OCR via image conversion
+    if not text.strip():
+        try:
+            images = convert_from_bytes(pdf_bytes)
+            text = "\n".join(pytesseract.image_to_string(img) for img in images)
+        except Exception:
+            pass
+
+    return text
+
+def extract_transactions(pdf_bytes: bytes):
+    full_text = extract_text_from_pdf(pdf_bytes)
+
+    closing_date = extract_statement_period(full_text)
+    if not closing_date:
+        raise ValueError("Unable to extract closing date")
+
+    source = extract_account_source(full_text)
+
+    transactions = extract_transactions_from_text(full_text, source, closing_date)
     return transactions
