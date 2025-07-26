@@ -6,10 +6,11 @@ from utils.clean_vendor_name import clean_vendor_name
 
 def extract_statement_period(text):
     patterns = [
-        r"Closing Date[:\s]+(\d{1,2}/\d{1,2}/\d{2,4})",
-        r"Period Ending[:\s]+(\d{1,2}/\d{1,2}/\d{2,4})",
-        r"Statement Closing Date[:\s]+(\d{1,2}/\d{1,2}/\d{2,4})",
-        r"Closing Date[:\s]+([A-Za-z]{3,9} \d{1,2}, \d{4})"
+        r"Closing Date[:\s]*?(\d{1,2}/\d{1,2}/\d{2,4})",  # handles space, colon, or no separator
+        r"Closing Date(\d{1,2}/\d{1,2}/\d{2,4})",         # handles NO space or colon
+        r"Period Ending[:\s]*?(\d{1,2}/\d{1,2}/\d{2,4})",
+        r"Statement Closing Date[:\s]*?(\d{1,2}/\d{1,2}/\d{2,4})",
+        r"Closing Date\s+([A-Za-z]{3,9} \d{1,2}, \d{4})"
     ]
 
     for pattern in patterns:
