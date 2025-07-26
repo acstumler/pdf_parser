@@ -27,7 +27,9 @@ def extract_text_via_ocr(path):
     return full_text
 
 def extract_statement_period(text):
-    date_range_pattern = re.compile(r'([A-Za-z]{3,9})[\s\-–]+(\d{1,2})[\s\-–]+[–\-—][\s\-–]+([A-Za-z]{3,9})[\s\-–]+(\d{1,2}),\s*(\d{4})')
+    date_range_pattern = re.compile(
+        r'([A-Za-z]{3,9})[\s\-–]+(\d{1,2})[\s\-–]+[–\-—][\s\-–]+([A-Za-z]{3,9})[\s\-–]+(\d{1,2}),\s*(\d{4})'
+    )
     match = date_range_pattern.search(text)
     if match:
         try:
@@ -47,28 +49,36 @@ def extract_source_account(text):
 
 def extract_transactions(text, start_date=None, end_date=None, source="Unknown"):
     transaction_pattern = re.compile(
-        r'(\d{2}/\d{2}/\d{2,4})\s+(.+?)\s+\$?(-?\(?\d{1,4}(?:,\d{3})*(?:\.\d{2})?\)?)',
+        r'(\d{2}/\d{2}/\d{2,4})\s+(.*?)\s+\$?(-?\(?[\d,]+\.\d{2}\)?)',
         re.MULTILINE
     )
     matches = transaction_pattern.findall(text)
     transactions = []
 
+    print(f"Found {len(matches)} potential matches in raw text.")
+
     for raw_date, raw_memo, raw_amount in matches:
+        print(f"Parsing line: {raw_date} | {raw_memo} | {raw_amount}")
+
         try:
             date_obj = datetime.strptime(raw_date, "%m/%d/%Y")
         except ValueError:
             try:
                 date_obj = datetime.strptime(raw_date, "%m/%d/%y")
             except:
+                print(f"Skipping invalid date: {raw_date}")
                 continue
 
-        if start_date and end_date and not (start_date <= date_obj <= end_date):
-            continue
+        if start_date and end_date:
+            if not (start_date <= date_obj <= end_date):
+                print(f"Skipping out-of-range date: {date_obj}")
+                continue
 
         amount_clean = raw_amount.replace(',', '').replace('(', '-').replace(')', '')
         try:
             amount_float = float(amount_clean)
         except:
+            print(f"Skipping invalid amount: {raw_amount}")
             continue
 
         cleaned_memo = clean_memo(raw_memo)
@@ -81,6 +91,7 @@ def extract_transactions(text, start_date=None, end_date=None, source="Unknown")
             "amount": amount_float
         })
 
+    print(f"Final parsed transactions: {len(transactions)}")
     return transactions
 
 def clean_memo(memo):
@@ -96,4 +107,10 @@ def parse_pdf(path):
     text = extract_text_from_pdf(path)
     start_date, end_date = extract_statement_period(text)
     source = extract_source_account(text)
-    transactions = extract_tr_
+    transactions = extract_transactions(text, start_date, end_date, source)
+
+    print("DEBUG: Returning parsed transactions")
+    for t in transactions:
+        print(t)
+
+    return {"transactions": transactions}
