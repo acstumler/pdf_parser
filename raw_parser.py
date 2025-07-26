@@ -85,9 +85,9 @@ def extract_transactions(text, start_date=None, end_date=None, source="Unknown")
 
 def clean_memo(memo):
     memo = memo.strip()
-    memo = re.sub(r'\\*+', '', memo)
-    memo = re.sub(r'\\d{4,}', '', memo)
-    memo = re.sub(r'[^\\w\\s&.,/-]', '', memo)
+    memo = re.sub(r'\*+', '', memo)
+    memo = re.sub(r'\d{4,}', '', memo)
+    memo = re.sub(r'[^\w\s&.,/-]', '', memo)
     stopwords = {"aplpay", "tst", "store", "inc", "llc", "co", "payment", "continued", "memo", "auth", "ref"}
     words = [w for w in memo.split() if w.lower() not in stopwords]
     return " ".join(words).title()
@@ -96,5 +96,4 @@ def parse_pdf(path):
     text = extract_text_from_pdf(path)
     start_date, end_date = extract_statement_period(text)
     source = extract_source_account(text)
-    transactions = extract_transactions(text, start_date, end_date, source)
-    return {"transactions": transactions}
+    transactions = extract_tr_
