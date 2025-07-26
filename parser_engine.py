@@ -1,13 +1,8 @@
 import re
-import fitz  # PyMuPDF
 import pdfplumber
 from io import BytesIO
 from datetime import datetime, timedelta
 from utils.clean_vendor_name import clean_vendor_name
-
-# OCR support
-import pytesseract
-from pdf2image import convert_from_bytes
 
 def extract_statement_period(text):
     patterns = [
@@ -40,13 +35,16 @@ def extract_transactions_from_text(text, source, closing_date):
     seen = set()
     start_date = closing_date - timedelta(days=90)
 
-    # Enhanced regex to tolerate real-world messiness
     transaction_regex = re.compile(
-        r"(\d{1,2}/\d{1,2}/\d{2,4}).{0,50}?(-?\$?\(?\d{1,3}(?:,\d{3})*(?:\.\d{2})?\)?)",
+        r"(\d{1,2}/\d{1,2}/\d{2,4}).{0,100}?(-?\$?\(?\d{1,3}(?:,\d{3})*(?:\.\d{2})?\)?)",
         re.IGNORECASE
     )
 
     for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
         match = transaction_regex.search(line)
         if match:
             try:
@@ -57,7 +55,6 @@ def extract_transactions_from_text(text, source, closing_date):
 
                 date = date_obj.strftime("%m/%d/%Y")
 
-                # Clean amount string
                 raw_amount = match.group(2).replace("(", "-").replace(")", "").replace("$", "").replace(",", "")
                 amount = float(raw_amount)
 
@@ -67,44 +64,31 @@ def extract_transactions_from_text(text, source, closing_date):
                 seen.add(memo)
                 vendor = clean_vendor_name(memo)
 
-                transactions.append({
+                transaction = {
                     "date": date,
                     "memo": vendor,
                     "account": "Unknown",
                     "source": source,
                     "amount": f"${amount:,.2f}"
-                })
+                }
+
+                print("✅ Matched transaction:", transaction)
+                transactions.append(transaction)
+
             except Exception as e:
-                print("Error parsing line:", line, "| Error:", e)
-                continue
+                print("❌ Error parsing line:", line, "| Error:", e)
         else:
-            print("Rejected line (no match):", line)
+            print("❌ Rejected line (no match):", line)
 
     return transactions
 
 def extract_text_from_pdf(pdf_bytes):
-    text = ""
-
     try:
         with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
-            text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-    except Exception:
-        pass
-
-    if not text.strip():
-        try:
-            text = "\n".join([page.get_text() for page in fitz.open(stream=pdf_bytes, filetype="pdf")])
-        except Exception:
-            pass
-
-    if not text.strip():
-        try:
-            images = convert_from_bytes(pdf_bytes)
-            text = "\n".join(pytesseract.image_to_string(img) for img in images)
-        except Exception:
-            pass
-
-    return text
+            return "\n".join(page.extract_text() or "" for page in pdf.pages)
+    except Exception as e:
+        print("❌ Failed to extract text via pdfplumber:", e)
+        return ""
 
 def extract_transactions(pdf_bytes: bytes):
     full_text = extract_text_from_pdf(pdf_bytes)
@@ -118,6 +102,4 @@ def extract_transactions(pdf_bytes: bytes):
         raise ValueError("Unable to extract closing date")
 
     source = extract_account_source(full_text)
-
-    transactions = extract_transactions_from_text(full_text, source, closing_date)
-    return transactions
+    return extract_transactions_from_text(full_text, source, closing_date)
