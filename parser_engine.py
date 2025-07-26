@@ -40,21 +40,33 @@ def extract_transactions_from_text(text, source, closing_date):
     seen = set()
     start_date = closing_date - timedelta(days=90)
 
+    # Enhanced regex to tolerate real-world messiness
+    transaction_regex = re.compile(
+        r"(\d{1,2}/\d{1,2}/\d{2,4}).{0,50}?(-?\$?\(?\d{1,3}(?:,\d{3})*(?:\.\d{2})?\)?)",
+        re.IGNORECASE
+    )
+
     for line in lines:
-        match = re.search(r"(\d{1,2}/\d{1,2}/\d{2}).*?\$?(-?\d{1,3}(?:,\d{3})*(?:\.\d{2})?)", line)
+        match = transaction_regex.search(line)
         if match:
             try:
                 raw_date = match.group(1)
-                date_obj = datetime.strptime(raw_date, "%m/%d/%y")
+                date_obj = datetime.strptime(raw_date, "%m/%d/%y") if len(raw_date.split('/')[-1]) == 2 else datetime.strptime(raw_date, "%m/%d/%Y")
                 if not (start_date <= date_obj <= closing_date):
                     continue
+
                 date = date_obj.strftime("%m/%d/%Y")
-                amount = float(match.group(2).replace(",", ""))
+
+                # Clean amount string
+                raw_amount = match.group(2).replace("(", "-").replace(")", "").replace("$", "").replace(",", "")
+                amount = float(raw_amount)
+
                 memo = re.sub(r"\s+", " ", line).strip()
                 if memo in seen:
                     continue
                 seen.add(memo)
                 vendor = clean_vendor_name(memo)
+
                 transactions.append({
                     "date": date,
                     "memo": vendor,
@@ -62,10 +74,10 @@ def extract_transactions_from_text(text, source, closing_date):
                     "source": source,
                     "amount": f"${amount:,.2f}"
                 })
-            except Exception:
+            except Exception as e:
+                print("Error parsing line:", line, "| Error:", e)
                 continue
         else:
-            # DEBUG: log rejected lines
             print("Rejected line (no match):", line)
 
     return transactions
