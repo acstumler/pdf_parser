@@ -1,81 +1,108 @@
 import re
 from datetime import datetime
-from .raw_parser import extract_text_blocks
-from .utils.memo_cleaner import clean_memo_text
-from .utils.date_utils import is_within_date_range
-from .utils.ocr_utils import extract_text_with_ocr
+from pdfminer.high_level import extract_text
+from pdf2image import convert_from_path
+import pytesseract
+from io import BytesIO
+from PIL import Image
 
+def extract_text_from_pdf(path):
+    try:
+        text = extract_text(path)
+        if text and len(text.strip()) > 50:
+            return text
+        else:
+            return extract_text_via_ocr(path)
+    except Exception:
+        return extract_text_via_ocr(path)
 
-def extract_transactions(text: str, learned_memory: dict = {}):
-    print("📄 Beginning structured extraction process")
+def extract_text_via_ocr(path):
+    images = convert_from_path(path)
+    full_text = ""
+    for img in images:
+        buffered = BytesIO()
+        img.save(buffered, format="JPEG")
+        text = pytesseract.image_to_string(Image.open(buffered))
+        full_text += text + "\n"
+    return full_text
+
+def extract_statement_period(text):
+    # Looks for date ranges like "Oct 28 – Nov 27, 2023" or similar
+    date_range_pattern = re.compile(r'([A-Za-z]{3,9})[\s\-–]+(\d{1,2})[\s\-–]+[–\-—][\s\-–]+([A-Za-z]{3,9})[\s\-–]+(\d{1,2}),\s*(\d{4})')
+    match = date_range_pattern.search(text)
+    if match:
+        try:
+            month1, day1, month2, day2, year = match.groups()
+            start_date = datetime.strptime(f"{month1} {day1} {year}", "%b %d %Y")
+            end_date = datetime.strptime(f"{month2} {day2} {year}", "%b %d %Y")
+            return start_date, end_date
+        except:
+            return None, None
+    return None, None
+
+def extract_source_account(text):
+    match = re.search(r'Account Ending[\s\-]*?(\d{5})', text, re.IGNORECASE)
+    if match:
+        return f"AMEX {match.group(1)}"
+    return "Unknown"
+
+def extract_transactions(text, start_date=None, end_date=None, source="Unknown"):
+    transaction_pattern = re.compile(
+        r'(\d{2}/\d{2}/\d{2,4})\s+([^\n]*?)\s+\$?(-?\(?\d{1,4}(?:,\d{3})*(?:\.\d{2})?\)?)',
+        re.MULTILINE
+    )
+    matches = transaction_pattern.findall(text)
     transactions = []
 
-    # Try OCR fallback if text appears too empty or malformed
-    if len(text.strip().splitlines()) < 10 or "STATEMENT" not in text.upper():
-        print("⚠️ Low confidence in extracted text — attempting OCR fallback")
-        text = extract_text_with_ocr(text)
+    for match in matches:
+        raw_date, raw_memo, raw_amount = match
 
-    lines = text.splitlines()
-    lines = [line.strip() for line in lines if line.strip()]
-    print(f"🧾 Scanning {len(lines)} lines from input...")
-
-    # Extract header info (statement date range and source)
-    statement_source = "Unknown"
-    closing_date = None
-
-    for line in lines:
-        if match := re.search(r"Account Ending(?:\D*?)(\d{5})", line):
-            statement_source = f"AMEX {match.group(1)}"
-        if match := re.search(r"Closing Date[:\s]*([A-Za-z]{3,9} \d{1,2},? \d{4})", line):
-            try:
-                closing_date = datetime.strptime(match.group(1).replace(",", ""), "%B %d %Y")
-                print(f"🗓️ Parsed closing date: {closing_date.strftime('%m/%d/%Y')}")
-            except Exception as e:
-                print(f"⚠️ Failed to parse closing date: {e}")
-
-    transaction_block_pattern = re.compile(
-        r"(?P<date>\d{2}/\d{2}/\d{2,4})\*?\s+(?P<description>.+?)\s+\$?(?P<amount>[-]?\(?\$?\d+[\.,]?\d{0,2}\)?)"
-    )
-
-    for line in lines:
-        print(f"🔍 SCANNING LINE: {line}")
-        match = transaction_block_pattern.search(line)
-        if not match:
-            print(f"❌ REJECTED LINE (NO MATCH): {line}")
-            continue
-
-        date_str = match.group("date")
         try:
-            parsed_date = datetime.strptime(date_str, "%m/%d/%Y")
+            date_obj = datetime.strptime(raw_date, "%m/%d/%Y")
         except ValueError:
             try:
-                parsed_date = datetime.strptime(date_str, "%m/%d/%y")
-            except ValueError:
-                print(f"❌ Invalid date: {date_str}")
+                date_obj = datetime.strptime(raw_date, "%m/%d/%y")
+            except:
                 continue
 
-        if closing_date and not is_within_date_range(parsed_date, closing_date):
-            print(f"❌ Outside closing window: {parsed_date.strftime('%m/%d/%Y')}")
+        if start_date and end_date:
+            if not (start_date <= date_obj <= end_date):
+                continue
+
+        amount_clean = raw_amount.replace(',', '').replace('(', '-').replace(')', '')
+        try:
+            amount_float = float(amount_clean)
+        except:
             continue
 
-        raw_memo = match.group("description")
-        cleaned_memo = clean_memo_text(raw_memo)
+        amount_formatted = f"${abs(amount_float):,.2f}"
+        if amount_float < 0:
+            amount_formatted = f"(${abs(amount_float):,.2f})"
 
-        raw_amount = match.group("amount")
-        formatted_amount = (
-            f"-${raw_amount.strip('()$')}" if "(" in raw_amount or "-" in raw_amount else f"${raw_amount.strip('$')}"
-        )
+        memo_cleaned = clean_memo(raw_memo)
 
-        transaction = {
-            "date": parsed_date.strftime("%m/%d/%Y"),
-            "memo": cleaned_memo,
+        transactions.append({
+            "date": date_obj.strftime("%m/%d/%Y"),
+            "memo": memo_cleaned,
             "account": "Unknown",
-            "source": statement_source,
-            "amount": formatted_amount,
-        }
+            "source": source,
+            "amount": amount_formatted
+        })
 
-        print(f"✅ MATCHED TRANSACTION: {transaction}")
-        transactions.append(transaction)
+    return transactions
 
-    print(f"📊 Parsed {len(transactions)} transactions.")
+def clean_memo(memo):
+    memo = memo.strip()
+    memo = re.sub(r'\*+', '', memo)
+    memo = re.sub(r'\d{4,}', '', memo)  # Remove long numeric codes
+    memo = re.sub(r'[^\w\s&.,/-]', '', memo)
+    words = memo.split()
+    filtered = [w for w in words if w.lower() not in ("aplpay", "tst", "store", "inc", "llc", "co")]
+    return " ".join(filtered).title()
+
+def parse_pdf(path):
+    text = extract_text_from_pdf(path)
+    start_date, end_date = extract_statement_period(text)
+    source = extract_source_account(text)
+    transactions = extract_transactions(text, start_date, end_date, source)
     return transactions
