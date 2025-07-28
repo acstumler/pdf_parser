@@ -1,7 +1,6 @@
 import pdfplumber
 import re
 from datetime import datetime
-import pandas as pd
 
 def detect_statement_period(text):
     match = re.search(r'(Closing Date|Period Ending|Statement Date)[\s:]*?(\d{1,2}/\d{1,2}/\d{2,4})', text, re.IGNORECASE)
