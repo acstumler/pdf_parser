@@ -1,7 +1,9 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from universal_parser import extract_visual_rows_v2 as extract_transactions
 import tempfile
+import pdfplumber
+
+from universal_parser import extract_visual_rows_v2 as extract_transactions
 
 app = FastAPI()
 
@@ -21,5 +23,9 @@ async def parse_universal(file: UploadFile = File(...)):
         tmp.write(contents)
         tmp_path = tmp.name
 
-    transactions = extract_transactions(tmp_path)
+    # ✅ FIXED: Read text before passing into parser
+    with pdfplumber.open(tmp_path) as pdf:
+        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+
+    transactions = extract_transactions(full_text)
     return {"transactions": transactions}
