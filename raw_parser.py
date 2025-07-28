@@ -28,7 +28,7 @@ def clean_memo(memo):
     memo = memo.strip()
     memo = re.sub(r'\*+', '', memo)
     memo = re.sub(r'[^\w\s&.,/-]', '', memo)
-    stopwords = {"payment", "continued", "memo", "auth", "ref"}
+    stopwords = {"payment", "continued", "memo", "auth", "ref", "amount", "summary"}
     words = [w for w in memo.split() if w.lower() not in stopwords]
     return " ".join(words).title()
 
@@ -51,55 +51,51 @@ def extract_transactions_multiline(pdf_path, start_date=None, end_date=None, sou
         if date_match:
             date = date_match.group(1)
             memo_parts = [line[len(date):].strip()]
-            amount = None
+            amount_val = None
 
-            for j in range(i + 1, min(i + 11, len(all_lines))):
-                next_line = all_lines[j].strip()
-                amt_match = re.search(r'\$([\(\)\d,]+\.\d{2})', next_line)
-                if amt_match:
-                    amount = amt_match.group(1)
-                    i = j
-                    break
-                else:
-                    memo_parts.append(next_line)
-
-            memo = " ".join(memo_parts).strip()
-            if amount:
-                try:
-                    date_obj = datetime.strptime(date, "%m/%d/%Y")
-                except ValueError:
+            # Scan next 10 lines for memo and first amount
+            block = all_lines[i:i+10]
+            for line_candidate in block[1:]:
+                amt_match = re.search(r'\$([\(\)\d,]+\.\d{2})', line_candidate)
+                if amt_match and amount_val is None:
                     try:
-                        date_obj = datetime.strptime(date, "%m/%d/%y")
+                        amount_val = float(
+                            amt_match.group(1).replace(",", "").replace("(", "-").replace(")", "")
+                        )
                     except:
-                        i += 1
                         continue
+                    line_candidate = line_candidate.replace(amt_match.group(0), '')
+                memo_parts.append(line_candidate.strip())
 
-                if not (start_date <= date_obj <= end_date):
-                    i += 1
-                    continue
-
+            try:
+                date_obj = datetime.strptime(date, "%m/%d/%Y")
+            except ValueError:
                 try:
-                    amount_val = float(amount.replace(",", "").replace("(", "-").replace(")", ""))
+                    date_obj = datetime.strptime(date, "%m/%d/%y")
                 except:
                     i += 1
                     continue
 
-                memo_cleaned = clean_memo(memo)
-                key = (date_obj.strftime("%m/%d/%Y"), memo_cleaned, amount_val)
-                if key in seen_keys:
-                    i += 1
-                    continue
-                seen_keys.add(key)
+            if not (start_date <= date_obj <= end_date) or amount_val is None:
+                i += 1
+                continue
 
-                print(f"PARSED TRANSACTION — Date: {date_obj.strftime('%m/%d/%Y')} | Memo: {memo_cleaned} | Amount: ${amount_val:.2f}")
+            memo = clean_memo(" ".join(memo_parts))
+            key = (date_obj.strftime("%m/%d/%Y"), memo, amount_val)
+            if key in seen_keys:
+                i += 1
+                continue
+            seen_keys.add(key)
 
-                transactions.append({
-                    "date": date_obj.strftime("%m/%d/%Y"),
-                    "memo": memo_cleaned,
-                    "account": "Unknown",
-                    "source": source,
-                    "amount": amount_val
-                })
+            print(f"PARSED TRANSACTION — Date: {date_obj.strftime('%m/%d/%Y')} | Memo: {memo} | Amount: ${amount_val:.2f}")
+
+            transactions.append({
+                "date": date_obj.strftime("%m/%d/%Y"),
+                "memo": memo,
+                "account": "Unknown",
+                "source": source,
+                "amount": amount_val
+            })
         i += 1
 
     return transactions
