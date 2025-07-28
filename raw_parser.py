@@ -1,20 +1,21 @@
 import re
 import pdfplumber
-from datetime import datetime
+from datetime import datetime, timedelta
 
 def extract_statement_period(text):
-    date_range_pattern = re.compile(
-        r'([A-Za-z]{3,9})[\s\-–]+(\d{1,2})[\s\-–]+[–\-—][\s\-–]+([A-Za-z]{3,9})[\s\-–]+(\d{1,2}),\s*(\d{4})'
-    )
-    match = date_range_pattern.search(text)
-    if match:
+    # Only use closing date and back-calculate 90 days
+    closing_match = re.search(r'Closing Date\s+(\d{1,2}/\d{1,2}/\d{2,4})', text, re.IGNORECASE)
+    if closing_match:
         try:
-            month1, day1, month2, day2, year = match.groups()
-            start_date = datetime.strptime(f"{month1} {day1} {year}", "%b %d %Y")
-            end_date = datetime.strptime(f"{month2} {day2} {year}", "%b %d %Y")
-            return start_date, end_date
+            closing_date_str = closing_match.group(1)
+            try:
+                closing_date = datetime.strptime(closing_date_str, "%m/%d/%Y")
+            except ValueError:
+                closing_date = datetime.strptime(closing_date_str, "%m/%d/%y")
+            start_date = closing_date - timedelta(days=90)
+            return start_date, closing_date
         except:
-            return None, None
+            pass
     return None, None
 
 def extract_source_account(text):
