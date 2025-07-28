@@ -23,6 +23,7 @@ def extract_statement_period(text):
     return None, None
 
 def extract_source_account(text):
+    header_lines = "\n".join(text.splitlines()[:25])
     patterns = [
         r'Account(?:\s*Ending|\s*Number)?[\s:\-]*?(\d{4,6})',
         r'Card Ending in (\d{4,6})',
@@ -30,7 +31,7 @@ def extract_source_account(text):
         r'Number:\s*(\d{4,6})'
     ]
     for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
+        match = re.search(pattern, header_lines, re.IGNORECASE)
         if match:
             return f"AMEX {match.group(1)}"
     return "Unknown"
@@ -67,19 +68,19 @@ def extract_visual_rows_v2(pdf_path):
             for y_coord in sorted(rows.keys()):
                 line = rows[y_coord]
                 line.sort(key=lambda w: w["x0"])
-                text_line = " ".join(w["text"] for w in line)
+                texts = [w["text"] for w in line]
 
-                date_match = re.match(r'^(\d{2}/\d{2}/\d{2,4})', text_line)
-                amount_match = re.search(r'[-]?\(?\$?([\d,]+\.\d{2})\)?$', text_line)
+                if len(texts) < 3:
+                    continue
+
+                date_match = re.match(r'^(\d{2}/\d{2}/\d{2,4})', texts[0])
+                amount_match = re.search(r'[-]?\(?\$?([\d,]+\.\d{2})\)?$', texts[-1])
 
                 if not date_match or not amount_match:
                     continue
 
                 raw_date = date_match.group(1)
                 raw_amount = amount_match.group(1)
-
-                memo_text = text_line
-                memo_text = memo_text.replace(raw_date, "").replace(raw_amount, "").replace("$", "").strip()
 
                 try:
                     date_obj = datetime.strptime(raw_date, "%m/%d/%Y")
@@ -94,11 +95,13 @@ def extract_visual_rows_v2(pdf_path):
 
                 try:
                     amount = float(raw_amount.replace(",", ""))
-                    if "(" in text_line or "-" in text_line:
+                    if "(" in texts[-1] or "-" in texts[-1]:
                         amount *= -1
                 except:
                     continue
 
+                memo_parts = texts[1:-1]  # everything between date and amount
+                memo_text = " ".join(memo_parts)
                 cleaned_memo = clean_vendor_name(memo_text)
                 classification_result = classifyTransaction(cleaned_memo, amount)
                 account = classification_result.get("classification", "7090 - Uncategorized Expense")
