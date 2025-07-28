@@ -17,7 +17,6 @@ def extract_statement_period(text):
             return start_date, closing_date
         except Exception as e:
             print(f"ERROR parsing closing date: {e}")
-
     print("WARNING: No recognizable closing/period date found — skipping transactions.")
     return None, None
 
@@ -28,9 +27,8 @@ def extract_source_account(text):
 def clean_memo(memo):
     memo = memo.strip()
     memo = re.sub(r'\*+', '', memo)
-    memo = re.sub(r'\d{4,}', '', memo)
-    memo = re.sub(r'[^\w\s&.,/-]', '', memo)
-    stopwords = {"aplpay", "tst", "store", "inc", "llc", "co", "payment", "continued", "memo", "auth", "ref"}
+    memo = re.sub(r'[^\w\s&.,/-]', '', memo)  # keep digits and punctuation
+    stopwords = {"payment", "continued", "memo", "auth", "ref"}
     words = [w for w in memo.split() if w.lower() not in stopwords]
     return " ".join(words).title()
 
@@ -55,12 +53,13 @@ def extract_transactions_multiline(pdf_path, start_date=None, end_date=None, sou
             memo_parts = [line[len(date):].strip()]
             amount = None
 
-            for j in range(i + 1, min(i + 6, len(all_lines))):
+            # Look ahead more lines to find trailing amount
+            for j in range(i + 1, min(i + 11, len(all_lines))):
                 next_line = all_lines[j].strip()
-                amt_match = re.search(r'\$([\(\)\d,]+\.\d{2})$', next_line)
+                amt_match = re.search(r'\$([\(\)\d,]+\.\d{2})', next_line)
                 if amt_match:
                     amount = amt_match.group(1)
-                    i = j  # advance pointer past amount line
+                    i = j  # move past amount line
                     break
                 else:
                     memo_parts.append(next_line)
