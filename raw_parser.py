@@ -3,19 +3,19 @@ import pdfplumber
 from datetime import datetime, timedelta
 
 def extract_statement_period(text):
-    # Only use closing date and back-calculate 90 days
     closing_match = re.search(r'Closing Date\s+(\d{1,2}/\d{1,2}/\d{2,4})', text, re.IGNORECASE)
     if closing_match:
+        date_str = closing_match.group(1)
         try:
-            closing_date_str = closing_match.group(1)
-            try:
-                closing_date = datetime.strptime(closing_date_str, "%m/%d/%Y")
-            except ValueError:
-                closing_date = datetime.strptime(closing_date_str, "%m/%d/%y")
+            if len(date_str.split("/")[-1]) == 2:
+                closing_date = datetime.strptime(date_str, "%m/%d/%y")
+            else:
+                closing_date = datetime.strptime(date_str, "%m/%d/%Y")
             start_date = closing_date - timedelta(days=90)
+            print(f"DEBUG: Statement period = {start_date.date()} to {closing_date.date()}")
             return start_date, closing_date
-        except:
-            pass
+        except Exception as e:
+            print(f"ERROR parsing closing date: {e}")
     return None, None
 
 def extract_source_account(text):
