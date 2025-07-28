@@ -1,5 +1,5 @@
-import re
 import pdfplumber
+import re
 from datetime import datetime, timedelta
 from utils.classifyTransaction import classifyTransaction
 from utils.clean_vendor_name import clean_vendor_name
@@ -58,45 +58,47 @@ def extract_visual_rows_v2(pdf_path):
             for y_coord in sorted(rows.keys()):
                 line = rows[y_coord]
                 line.sort(key=lambda w: w["x0"])
-                text_line = " ".join(w["text"] for w in line)
+                texts = [w["text"] for w in line]
 
-                date_match = re.match(r'^(\d{2}/\d{2}/\d{2,4})', text_line)
-                amount_match = re.search(r'[-]?\(?\$?([\d,]+\.\d{2})\)?$', text_line)
+                if len(texts) < 3:
+                    continue
+
+                # Detect and parse date
+                date_match = re.match(r'(\d{2}/\d{2}/\d{2,4})', texts[0])
+                amount_match = re.search(r'\(?\$?-?[\d,]+\.\d{2}\)?$', texts[-1])
 
                 if not date_match or not amount_match:
                     continue
 
-                raw_date = date_match.group(1)
-                raw_amount = amount_match.group(1)
-                memo_text = text_line.replace(raw_date, "").replace(raw_amount, "").replace("$", "").strip()
-
                 try:
-                    date_obj = datetime.strptime(raw_date, "%m/%d/%Y")
+                    date_obj = datetime.strptime(date_match.group(1), "%m/%d/%y")
                 except ValueError:
                     try:
-                        date_obj = datetime.strptime(raw_date, "%m/%d/%y")
+                        date_obj = datetime.strptime(date_match.group(1), "%m/%d/%Y")
                     except:
                         continue
 
                 if not (start_date <= date_obj <= end_date):
                     continue
 
+                raw_amount = texts[-1]
                 try:
-                    amount = float(raw_amount.replace(",", ""))
-                    if "(" in text_line or "-" in text_line:
-                        amount *= -1
+                    amt = float(
+                        raw_amount.replace("$", "").replace(",", "").replace("(", "-").replace(")", "")
+                    )
                 except:
                     continue
 
-                cleaned_memo = clean_vendor_name(memo_text)
-                classification = classifyTransaction(cleaned_memo, amount).get("classification", "7090 - Uncategorized Expense")
+                memo_text = " ".join(texts[1:-1])
+                memo_clean = clean_vendor_name(memo_text)
+                classification = classifyTransaction(memo_clean, amt).get("classification", "7090 - Uncategorized Expense")
 
                 transactions.append({
                     "date": format_date(date_obj),
-                    "memo": cleaned_memo,
+                    "memo": memo_clean,
                     "account": classification,
                     "source": source_account,
-                    "amount": format_currency(amount),
+                    "amount": format_currency(amt),
                 })
 
     return transactions
