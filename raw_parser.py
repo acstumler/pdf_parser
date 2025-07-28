@@ -11,39 +11,19 @@ def extract_statement_period(text):
     if closing_match:
         date_str = closing_match.group(2)
         try:
-            if len(date_str.split("/")[-1]) == 2:
-                closing_date = datetime.strptime(date_str, "%m/%d/%y")
-            else:
-                closing_date = datetime.strptime(date_str, "%m/%d/%Y")
+            closing_date = datetime.strptime(date_str, "%m/%d/%y") if len(date_str.split("/")[-1]) == 2 else datetime.strptime(date_str, "%m/%d/%Y")
             start_date = closing_date - timedelta(days=90)
             print(f"DEBUG: Statement period = {start_date.date()} to {closing_date.date()}")
             return start_date, closing_date
         except Exception as e:
-            print(f"ERROR parsing standard closing date: {e}")
-
-    range_match = re.search(
-        r'([A-Za-z]{3,9})[.\s]+(\d{1,2})\s*[–\-—]\s*([A-Za-z]{3,9})[.\s]+(\d{1,2}),?\s*(\d{4})',
-        text,
-        re.IGNORECASE
-    )
-    if range_match:
-        try:
-            m1, d1, m2, d2, year = range_match.groups()
-            start_date = datetime.strptime(f"{m1} {d1} {year}", "%B %d %Y")
-            end_date = datetime.strptime(f"{m2} {d2} {year}", "%B %d %Y")
-            print(f"DEBUG: Detected range = {start_date.date()} to {end_date.date()}")
-            return start_date, end_date
-        except Exception as e:
-            print(f"ERROR parsing natural language range: {e}")
+            print(f"ERROR parsing closing date: {e}")
 
     print("WARNING: No recognizable closing/period date found — skipping transactions.")
     return None, None
 
 def extract_source_account(text):
     match = re.search(r'Account Ending[\s\-]*?(\d{4,6})', text, re.IGNORECASE)
-    if match:
-        return f"AMEX {match.group(1)}"
-    return "Unknown"
+    return f"AMEX {match.group(1)}" if match else "Unknown"
 
 def clean_memo(memo):
     memo = memo.strip()
@@ -54,7 +34,7 @@ def clean_memo(memo):
     words = [w for w in memo.split() if w.lower() not in stopwords]
     return " ".join(words).title()
 
-def extract_transactions_visual(pdf_path, start_date=None, end_date=None, source="Unknown"):
+def extract_transactions_multiline(pdf_path, start_date=None, end_date=None, source="Unknown"):
     if not start_date or not end_date:
         return []
 
@@ -62,63 +42,77 @@ def extract_transactions_visual(pdf_path, start_date=None, end_date=None, source
     seen_keys = set()
 
     with pdfplumber.open(pdf_path) as pdf:
-        full_text = ""
+        all_lines = []
         for page in pdf.pages:
-            full_text += page.extract_text() + "\n"
+            all_lines.extend(page.extract_text().split("\n"))
 
-    # Match lines like: 11/04/23 WALGREENS LOUISVILLE KY $20.66
-    line_pattern = re.compile(
-        r'(\d{2}/\d{2}/\d{2,4})\s+(.+?)\s+\$?(-?\(?[\d,]+\.\d{2}\)?)',
-        re.MULTILINE
-    )
-    matches = line_pattern.findall(full_text)
+    i = 0
+    while i < len(all_lines):
+        line = all_lines[i].strip()
+        date_match = re.match(r'^(\d{2}/\d{2}/\d{2,4})\b', line)
+        if date_match:
+            date = date_match.group(1)
+            memo_parts = [line[len(date):].strip()]
+            amount = None
 
-    for raw_date, raw_memo, raw_amount in matches:
-        try:
-            date_obj = datetime.strptime(raw_date, "%m/%d/%Y")
-        except ValueError:
-            try:
-                date_obj = datetime.strptime(raw_date, "%m/%d/%y")
-            except:
-                continue
+            for j in range(i + 1, min(i + 6, len(all_lines))):
+                next_line = all_lines[j].strip()
+                amt_match = re.search(r'\$([\(\)\d,]+\.\d{2})$', next_line)
+                if amt_match:
+                    amount = amt_match.group(1)
+                    i = j  # advance pointer past amount line
+                    break
+                else:
+                    memo_parts.append(next_line)
 
-        if not (start_date <= date_obj <= end_date):
-            continue
+            memo = " ".join(memo_parts).strip()
+            if amount:
+                try:
+                    date_obj = datetime.strptime(date, "%m/%d/%Y")
+                except ValueError:
+                    try:
+                        date_obj = datetime.strptime(date, "%m/%d/%y")
+                    except:
+                        i += 1
+                        continue
 
-        amount_clean = raw_amount.replace(",", "").replace("(", "-").replace(")", "")
-        try:
-            amount_float = float(amount_clean)
-        except:
-            continue
+                if not (start_date <= date_obj <= end_date):
+                    i += 1
+                    continue
 
-        memo_cleaned = clean_memo(raw_memo)
+                try:
+                    amount_val = float(amount.replace(",", "").replace("(", "-").replace(")", ""))
+                except:
+                    i += 1
+                    continue
 
-        key = (date_obj.strftime("%m/%d/%Y"), memo_cleaned, amount_float)
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
+                memo_cleaned = clean_memo(memo)
+                key = (date_obj.strftime("%m/%d/%Y"), memo_cleaned, amount_val)
+                if key in seen_keys:
+                    i += 1
+                    continue
+                seen_keys.add(key)
 
-        transactions.append({
-            "date": date_obj.strftime("%m/%d/%Y"),
-            "memo": memo_cleaned,
-            "account": "Unknown",
-            "source": source,
-            "amount": amount_float
-        })
+                transactions.append({
+                    "date": date_obj.strftime("%m/%d/%Y"),
+                    "memo": memo_cleaned,
+                    "account": "Unknown",
+                    "source": source,
+                    "amount": amount_val
+                })
+        i += 1
 
     return transactions
 
 def parse_pdf(path):
     with pdfplumber.open(path) as pdf:
-        full_text = ""
-        for page in pdf.pages:
-            full_text += page.extract_text() or ""
+        full_text = "\n".join([page.extract_text() or "" for page in pdf.pages])
 
     start_date, end_date = extract_statement_period(full_text)
     if not start_date or not end_date:
         return {"transactions": []}
 
     source = extract_source_account(full_text)
-    transactions = extract_transactions_visual(path, start_date, end_date, source)
+    transactions = extract_transactions_multiline(path, start_date, end_date, source)
 
     return {"transactions": transactions}
