@@ -1,117 +1,80 @@
+from datetime import datetime
 import re
-import pdfplumber
-from datetime import datetime, timedelta
-from utils.classifyTransaction import classifyTransaction
-from utils.clean_vendor_name import clean_vendor_name
+from pdf_parser.utils.clean_vendor_name import clean_vendor_name
+from pdf_parser.utils.classifyTransaction import classifyTransaction
 
-def extract_statement_period(text):
-    match = re.search(
-        r'(Closing Date|Period Ending|Statement Date)[\s:\n\r]*?(\d{1,2}/\d{1,2}/\d{2,4})',
-        text,
-        re.IGNORECASE,
+
+def extract_visual_rows_v2(text, source_hint=None, closing_date=None):
+    lines = text.split("\n")
+
+    # Try to extract account number from header (first 25 lines)
+    account_match = next(
+        (
+            re.search(r"Account Ending(?:\s*in)? (\d{4,6})", l)
+            for l in lines[:25]
+            if "Account Ending" in l
+        ),
+        None,
     )
-    if match:
-        try:
-            closing_date = datetime.strptime(match.group(2), "%m/%d/%Y")
-        except ValueError:
-            try:
-                closing_date = datetime.strptime(match.group(2), "%m/%d/%y")
-            except:
-                return None, None
-        start_date = closing_date - timedelta(days=90)
-        return start_date, closing_date
-    return None, None
+    last4 = account_match.group(1) if account_match else "0000"
+    source = f"AMEX {last4}" if "American Express" in text or "AMEX" in text else f"Card {last4}"
 
-def extract_source_account(text):
-    header_lines = "\n".join(text.splitlines()[:25])
-    patterns = [
-        r'Account(?:\s*Ending|\s*Number)?[\s:\-]*?(\d{4,6})',
-        r'Card Ending in (\d{4,6})',
-        r'Acct[\s#:]*?(\d{4,6})',
-        r'Number:\s*(\d{4,6})'
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, header_lines, re.IGNORECASE)
-        if match:
-            return f"AMEX {match.group(1)}"
-    return "Unknown"
-
-def format_currency(amount):
-    try:
-        amount = float(amount)
-        return f"(${abs(amount):,.2f})" if amount < 0 else f"${amount:,.2f}"
-    except:
-        return "$0.00"
-
-def format_date(date_obj):
-    return date_obj.strftime("%m/%d/%y")
-
-def extract_visual_rows_v2(pdf_path):
     transactions = []
+    date_pattern = r"^\d{2}/\d{2}/\d{2}$"
 
-    with pdfplumber.open(pdf_path) as pdf:
-        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-        start_date, end_date = extract_statement_period(full_text)
-        source_account = extract_source_account(full_text)
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
 
-        if not start_date or not end_date:
-            return []
+        if re.match(date_pattern, line):
+            date_str = line
+            memo_parts = []
 
-        for page in pdf.pages:
-            words = page.extract_words(x_tolerance=1, y_tolerance=1)
-            rows = {}
+            i += 1
+            while i < len(lines):
+                next_line = lines[i].strip()
+                if re.match(date_pattern, next_line):
+                    break
+                if re.match(r"^\$?-?\(?\d{1,4}(,\d{3})*(\.\d{2})?\)?$", next_line):
+                    break
+                memo_parts.append(next_line)
+                i += 1
 
-            for word in words:
-                y = round(word["top"])
-                rows.setdefault(y, []).append(word)
+            amount_line = ""
+            if i < len(lines):
+                potential_amount = lines[i].strip()
+                if re.search(r"\$?-?\(?\d", potential_amount):
+                    amount_line = potential_amount
+                    i += 1
 
-            for y_coord in sorted(rows.keys()):
-                line = rows[y_coord]
-                line.sort(key=lambda w: w["x0"])
-                texts = [w["text"] for w in line]
+            memo_raw = " ".join(memo_parts)
+            memo = clean_vendor_name(memo_raw)
+            account = classifyTransaction(memo)
 
-                if len(texts) < 3:
-                    continue
+            try:
+                date_obj = datetime.strptime(date_str, "%m/%d/%y")
+                date = date_obj.strftime("%m/%d/%y")
+            except:
+                continue
 
-                date_match = re.match(r'^(\d{2}/\d{2}/\d{2,4})', texts[0])
-                amount_match = re.search(r'[-]?\(?\$?([\d,]+\.\d{2})\)?$', texts[-1])
+            try:
+                amount_val = float(
+                    re.sub(r"[^\d.-]", "", amount_line.replace("(", "-").replace(")", ""))
+                )
+                amount = f"(${abs(amount_val):,.2f})" if amount_val < 0 else f"${amount_val:,.2f}"
+            except:
+                amount = "$0.00"
 
-                if not date_match or not amount_match:
-                    continue
-
-                raw_date = date_match.group(1)
-                raw_amount = amount_match.group(1)
-
-                try:
-                    date_obj = datetime.strptime(raw_date, "%m/%d/%Y")
-                except ValueError:
-                    try:
-                        date_obj = datetime.strptime(raw_date, "%m/%d/%y")
-                    except:
-                        continue
-
-                if not (start_date <= date_obj <= end_date):
-                    continue
-
-                try:
-                    amount = float(raw_amount.replace(",", ""))
-                    if "(" in texts[-1] or "-" in texts[-1]:
-                        amount *= -1
-                except:
-                    continue
-
-                memo_parts = texts[1:-1]  # everything between date and amount
-                memo_text = " ".join(memo_parts)
-                cleaned_memo = clean_vendor_name(memo_text)
-                classification_result = classifyTransaction(cleaned_memo, amount)
-                account = classification_result.get("classification", "7090 - Uncategorized Expense")
-
-                transactions.append({
-                    "date": format_date(date_obj),
-                    "memo": cleaned_memo,
+            transactions.append(
+                {
+                    "date": date,
+                    "memo": memo,
                     "account": account,
-                    "source": source_account,
-                    "amount": format_currency(amount),
-                })
+                    "source": source,
+                    "amount": amount,
+                }
+            )
+        else:
+            i += 1
 
     return transactions
