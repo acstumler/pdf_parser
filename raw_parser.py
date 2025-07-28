@@ -27,7 +27,7 @@ def extract_source_account(text):
 def clean_memo(memo):
     memo = memo.strip()
     memo = re.sub(r'\*+', '', memo)
-    memo = re.sub(r'[^\w\s&.,/-]', '', memo)  # keep digits and punctuation
+    memo = re.sub(r'[^\w\s&.,/-]', '', memo)
     stopwords = {"payment", "continued", "memo", "auth", "ref"}
     words = [w for w in memo.split() if w.lower() not in stopwords]
     return " ".join(words).title()
@@ -53,13 +53,12 @@ def extract_transactions_multiline(pdf_path, start_date=None, end_date=None, sou
             memo_parts = [line[len(date):].strip()]
             amount = None
 
-            # Look ahead more lines to find trailing amount
             for j in range(i + 1, min(i + 11, len(all_lines))):
                 next_line = all_lines[j].strip()
                 amt_match = re.search(r'\$([\(\)\d,]+\.\d{2})', next_line)
                 if amt_match:
                     amount = amt_match.group(1)
-                    i = j  # move past amount line
+                    i = j
                     break
                 else:
                     memo_parts.append(next_line)
@@ -91,6 +90,8 @@ def extract_transactions_multiline(pdf_path, start_date=None, end_date=None, sou
                     i += 1
                     continue
                 seen_keys.add(key)
+
+                print(f"PARSED TRANSACTION — Date: {date_obj.strftime('%m/%d/%Y')} | Memo: {memo_cleaned} | Amount: ${amount_val:.2f}")
 
                 transactions.append({
                     "date": date_obj.strftime("%m/%d/%Y"),
