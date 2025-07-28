@@ -1,19 +1,17 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from typing import List
-import shutil
+import uvicorn
 import os
-from uuid import uuid4
+import tempfile
 
 from universal_parser import extract_transactions
-from utils.clean_vendor_name import clean_vendor_name
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Update to whitelist domains in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -22,18 +20,16 @@ app.add_middleware(
 @app.post("/parse-universal/")
 async def parse_universal(file: UploadFile = File(...)):
     try:
-        contents = await file.read()
-        temp_file_path = f"/tmp/{uuid4()}.pdf"
-        with open(temp_file_path, "wb") as f:
-            f.write(contents)
+        suffix = os.path.splitext(file.filename)[-1]
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(await file.read())
+            tmp_path = tmp.name
 
-        transactions = extract_transactions(temp_file_path)
-
-        for tx in transactions:
-            tx["memo"] = clean_vendor_name(tx.get("memo", ""))
-
-        os.remove(temp_file_path)
-        return JSONResponse(content={"transactions": transactions})
+        transactions = extract_transactions(tmp_path)
+        return {"transactions": transactions}
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8000)
