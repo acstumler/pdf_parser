@@ -1,9 +1,10 @@
-from pdf_parser.raw_parser import extract_visual_rows_v2
-from pdf_parser.utils.clean_vendor_name import clean_vendor_name
-from pdf_parser.utils.classifyTransaction import classifyTransaction
+from raw_parser import extract_visual_rows_v2
+from utils.clean_vendor_name import clean_vendor_name
+from utils.classifyTransaction import classifyTransaction
+import re
 
-def extract_transactions(text):
-    raw_blocks = extract_visual_rows_v2(text)
+def extract_transactions(pdf_path):
+    raw_blocks = extract_visual_rows_v2(pdf_path)
     transactions = []
 
     for block in raw_blocks:
