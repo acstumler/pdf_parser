@@ -6,9 +6,10 @@ import tempfile
 
 app = FastAPI()
 
+# ✅ Explicitly allow CORS from your deployed frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://lighthouse-iq.vercel.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
