@@ -16,6 +16,7 @@ def extract_statement_period(text):
             return start_date, closing_date
         except Exception as e:
             print(f"ERROR parsing closing date: {e}")
+    print("WARNING: Closing Date not found — skipping all transactions.")
     return None, None
 
 def extract_source_account(text):
@@ -34,6 +35,9 @@ def clean_memo(memo):
     return " ".join(words).title()
 
 def extract_transactions_visual(pdf_path, start_date=None, end_date=None, source="Unknown"):
+    if not start_date or not end_date:
+        return []  # Skip parsing if date range is not defined
+
     transactions = []
     seen_keys = set()
 
@@ -66,8 +70,8 @@ def extract_transactions_visual(pdf_path, start_date=None, end_date=None, source
                     except:
                         continue
 
-                # Enforce 90-day period filtering
-                if start_date and end_date and not (start_date <= date_obj <= end_date):
+                # Strictly enforce date window
+                if not (start_date <= date_obj <= end_date):
                     continue
 
                 amount_clean = raw_amount.replace(",", "").replace("(", "-").replace(")", "")
@@ -78,7 +82,6 @@ def extract_transactions_visual(pdf_path, start_date=None, end_date=None, source
 
                 memo_cleaned = clean_memo(raw_memo)
 
-                # Deduplication key
                 key = (date_obj.strftime("%m/%d/%Y"), memo_cleaned, amount_float)
                 if key in seen_keys:
                     continue
@@ -101,6 +104,9 @@ def parse_pdf(path):
             full_text += page.extract_text() or ""
 
     start_date, end_date = extract_statement_period(full_text)
+    if not start_date or not end_date:
+        return {"transactions": []}  # Return empty result if date detection fails
+
     source = extract_source_account(full_text)
     transactions = extract_transactions_visual(path, start_date, end_date, source)
 
