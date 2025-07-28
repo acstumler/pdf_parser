@@ -1,7 +1,7 @@
 from datetime import datetime
 import re
-from pdf_parser.utils.clean_vendor_name import clean_vendor_name
-from pdf_parser.utils.classifyTransaction import classifyTransaction
+from utils.clean_vendor_name import clean_vendor_name
+from utils.classifyTransaction import classifyTransaction
 
 
 def extract_visual_rows_v2(text, source_hint=None, closing_date=None):
