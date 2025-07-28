@@ -1,2 +1,5 @@
-def classifyTransaction(memo):
-    return "7090 - Uncategorized Expense"
+def classifyTransaction(memo, amount):
+    return {
+        "classification": "7090 - Uncategorized Expense",
+        "source": "default"
+    }
