@@ -3,9 +3,10 @@ import pdfplumber
 from datetime import datetime, timedelta
 
 def extract_statement_period(text):
-    closing_match = re.search(r'Closing Date\s+(\d{1,2}/\d{1,2}/\d{2,4})', text, re.IGNORECASE)
+    # Pattern 1: Closing Date, Statement Date, or Period Ending
+    closing_match = re.search(r'(Closing Date|Statement Date|Period Ending)[\s:]+(\d{1,2}/\d{1,2}/\d{2,4})', text, re.IGNORECASE)
     if closing_match:
-        date_str = closing_match.group(1)
+        date_str = closing_match.group(2)
         try:
             if len(date_str.split("/")[-1]) == 2:
                 closing_date = datetime.strptime(date_str, "%m/%d/%y")
@@ -15,8 +16,24 @@ def extract_statement_period(text):
             print(f"DEBUG: Statement period = {start_date.date()} to {closing_date.date()}")
             return start_date, closing_date
         except Exception as e:
-            print(f"ERROR parsing closing date: {e}")
-    print("WARNING: Closing Date not found — skipping all transactions.")
+            print(f"ERROR parsing standard closing date: {e}")
+
+    # Pattern 2: Natural language date range (e.g., Oct 28 – Nov 27, 2023)
+    range_match = re.search(
+        r'([A-Za-z]{3,9})[.\s]+(\d{1,2})\s*[–\-—]\s*([A-Za-z]{3,9})[.\s]+(\d{1,2}),?\s*(\d{4})',
+        text, re.IGNORECASE
+    )
+    if range_match:
+        try:
+            m1, d1, m2, d2, year = range_match.groups()
+            start_date = datetime.strptime(f"{m1} {d1} {year}", "%B %d %Y")
+            end_date = datetime.strptime(f"{m2} {d2} {year}", "%B %d %Y")
+            print(f"DEBUG: Detected range = {start_date.date()} to {end_date.date()}")
+            return start_date, end_date
+        except Exception as e:
+            print(f"ERROR parsing natural language range: {e}")
+
+    print("WARNING: No recognizable closing/period date found — skipping transactions.")
     return None, None
 
 def extract_source_account(text):
