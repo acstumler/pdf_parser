@@ -23,8 +23,17 @@ def extract_statement_period(text):
     return None, None
 
 def extract_source_account(text):
-    match = re.search(r'Account\s*(Number|Ending)?[\s\-:]*?(\d{4,6})', text, re.IGNORECASE)
-    return f"AMEX {match.group(2)}" if match else "Unknown"
+    patterns = [
+        r'Account(?:\s*Ending|\s*Number)?[\s:\-]*?(\d{4,6})',
+        r'Card Ending in (\d{4,6})',
+        r'Acct[\s#:]*?(\d{4,6})',
+        r'Number:\s*(\d{4,6})'
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return f"AMEX {match.group(1)}"
+    return "Unknown"
 
 def format_currency(amount):
     try:
