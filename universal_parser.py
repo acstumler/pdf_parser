@@ -1,36 +1,29 @@
-from raw_parser import extract_visual_rows_v2
-from utils.clean_vendor_name import clean_vendor_name
+from raw_parser import extract_visual_rows_v2 as extract_transactions
 from utils.classifyTransaction import classifyTransaction
-import re
+from utils.clean_vendor_name import clean_vendor_name
 
-def extract_transactions(pdf_path):
-    raw_blocks = extract_visual_rows_v2(pdf_path)
+def extract_transactions(file_path):
+    raw = extract_transactions(file_path)
     transactions = []
 
-    for block in raw_blocks:
-        try:
-            amount_match = re.search(r"(\$\(?\d{1,3}(?:,\d{3})*(?:\.\d{2})?\)?)", block)
-            date_match = re.search(r"\d{2}/\d{2}/\d{2,4}", block)
+    for item in raw:
+        date = item.get("date", "").strip()
+        memo_raw = item.get("memo", "").strip()
+        amount = item.get("amount", 0)
+        source = item.get("source", "Unknown")
 
-            amount = amount_match.group(1).replace('$', '').replace(',', '') if amount_match else None
-            date = date_match.group(0) if date_match else None
+        # Clean the memo
+        memo = clean_vendor_name(memo_raw)
 
-            if not amount or not date:
-                continue
+        # Classify the account based on memo and amount
+        classification = classifyTransaction((memo, amount)).get("classification", "7090 - Uncategorized Expense")
 
-            amt = float(amount.replace("(", "-").replace(")", ""))
-
-            memo = clean_vendor_name(block)
-            classification = classifyTransaction(memo).get("classification", "7090 - Uncategorized Expense")
-
-            transactions.append({
-                "date": date,
-                "memo": memo,
-                "account": classification,
-                "source": "Unknown",
-                "amount": f"${amt:,.2f}" if amt >= 0 else f"(${abs(amt):,.2f})"
-            })
-        except Exception:
-            continue
+        transactions.append({
+            "date": date,
+            "memo": memo,
+            "account": classification,
+            "source": source,
+            "amount": amount
+        })
 
     return transactions
