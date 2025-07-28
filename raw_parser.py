@@ -35,6 +35,7 @@ def clean_memo(memo):
 
 def extract_transactions_visual(pdf_path, start_date=None, end_date=None, source="Unknown"):
     transactions = []
+    seen_keys = set()
 
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
@@ -65,6 +66,7 @@ def extract_transactions_visual(pdf_path, start_date=None, end_date=None, source
                     except:
                         continue
 
+                # Enforce 90-day period filtering
                 if start_date and end_date and not (start_date <= date_obj <= end_date):
                     continue
 
@@ -75,6 +77,12 @@ def extract_transactions_visual(pdf_path, start_date=None, end_date=None, source
                     continue
 
                 memo_cleaned = clean_memo(raw_memo)
+
+                # Deduplication key
+                key = (date_obj.strftime("%m/%d/%Y"), memo_cleaned, amount_float)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
 
                 transactions.append({
                     "date": date_obj.strftime("%m/%d/%Y"),
