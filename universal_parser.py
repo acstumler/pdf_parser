@@ -2,7 +2,7 @@ import re
 import pdfplumber
 from datetime import datetime, timedelta
 from utils.classifyTransaction import classifyTransaction
-from clean_vendor_name import clean_vendor_name
+from utils.clean_vendor_name import clean_vendor_name
 
 def extract_statement_period(text):
     match = re.search(
@@ -68,7 +68,8 @@ def extract_visual_rows_v2(pdf_path):
 
                 raw_date = date_match.group(1)
                 raw_amount = amount_match.group(1)
-                memo_text = text_line.replace(raw_date, "").replace(raw_amount, "").replace("$", "").strip()
+                memo_text = re.sub(r'\s*\$?\(?-?\d[\d,]*\.\d{2}\)?', '', text_line)
+                memo_text = memo_text.replace(raw_date, "").replace("$", "").strip()
 
                 try:
                     date_obj = datetime.strptime(raw_date, "%m/%d/%Y")

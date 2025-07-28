@@ -1,6 +1,5 @@
 from utils.clean_vendor_name import clean_vendor_name
 
-# Placeholder in-memory vendor map (expand as needed)
 vendor_map = {
     "Starbucks": "Meals & Entertainment",
     "Chipotle": "Meals & Entertainment",
