@@ -7,11 +7,10 @@ import os
 from uuid import uuid4
 
 from universal_parser import extract_transactions
-from clean_vendor_name import clean_vendor_name
+from utils.clean_vendor_name import clean_vendor_name
 
 app = FastAPI()
 
-# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,7 +22,6 @@ app.add_middleware(
 @app.post("/parse-universal/")
 async def parse_universal(file: UploadFile = File(...)):
     try:
-        # Save uploaded file temporarily
         contents = await file.read()
         temp_file_path = f"/tmp/{uuid4()}.pdf"
         with open(temp_file_path, "wb") as f:
@@ -31,7 +29,6 @@ async def parse_universal(file: UploadFile = File(...)):
 
         transactions = extract_transactions(temp_file_path)
 
-        # Clean vendor names post-classification
         for tx in transactions:
             tx["memo"] = clean_vendor_name(tx.get("memo", ""))
 
