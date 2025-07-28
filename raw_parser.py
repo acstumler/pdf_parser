@@ -3,8 +3,8 @@ import pdfplumber
 from datetime import datetime, timedelta
 
 def extract_statement_period(text):
-    # Pattern 1: Closing Date, Statement Date, or Period Ending
-    closing_match = re.search(r'(Closing Date|Statement Date|Period Ending)[\s:]+(\d{1,2}/\d{1,2}/\d{2,4})', text, re.IGNORECASE)
+    # Pattern 1: Closing Date / Statement Date / Period Ending
+    closing_match = re.search(r'(Closing Date|Statement Date|Period Ending)\s+(\d{1,2}/\d{1,2}/\d{2,4})', text, re.IGNORECASE)
     if closing_match:
         date_str = closing_match.group(2)
         try:
@@ -18,7 +18,7 @@ def extract_statement_period(text):
         except Exception as e:
             print(f"ERROR parsing standard closing date: {e}")
 
-    # Pattern 2: Natural language date range (e.g., Oct 28 – Nov 27, 2023)
+    # Pattern 2: Natural language range (e.g., Oct 28 – Nov 27, 2023)
     range_match = re.search(
         r'([A-Za-z]{3,9})[.\s]+(\d{1,2})\s*[–\-—]\s*([A-Za-z]{3,9})[.\s]+(\d{1,2}),?\s*(\d{4})',
         text, re.IGNORECASE
@@ -87,7 +87,6 @@ def extract_transactions_visual(pdf_path, start_date=None, end_date=None, source
                     except:
                         continue
 
-                # Strictly enforce date window
                 if not (start_date <= date_obj <= end_date):
                     continue
 
@@ -122,7 +121,7 @@ def parse_pdf(path):
 
     start_date, end_date = extract_statement_period(full_text)
     if not start_date or not end_date:
-        return {"transactions": []}  # Return empty result if date detection fails
+        return {"transactions": []}
 
     source = extract_source_account(full_text)
     transactions = extract_transactions_visual(path, start_date, end_date, source)
