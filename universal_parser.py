@@ -23,8 +23,8 @@ def extract_statement_period(text):
     return None, None
 
 def extract_source_account(text):
-    match = re.search(r'Account Ending[\s\-]*?(\d{4,6})', text, re.IGNORECASE)
-    return f"AMEX {match.group(1)}" if match else "Unknown"
+    match = re.search(r'Account\s*(Number|Ending)?[\s\-:]*?(\d{4,6})', text, re.IGNORECASE)
+    return f"AMEX {match.group(2)}" if match else "Unknown"
 
 def format_currency(amount):
     try:
@@ -68,8 +68,9 @@ def extract_visual_rows_v2(pdf_path):
 
                 raw_date = date_match.group(1)
                 raw_amount = amount_match.group(1)
-                memo_text = re.sub(r'\s*\$?\(?-?\d[\d,]*\.\d{2}\)?', '', text_line)
-                memo_text = memo_text.replace(raw_date, "").replace("$", "").strip()
+
+                memo_text = text_line
+                memo_text = memo_text.replace(raw_date, "").replace(raw_amount, "").replace("$", "").strip()
 
                 try:
                     date_obj = datetime.strptime(raw_date, "%m/%d/%Y")
