@@ -1,26 +1,21 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-import tempfile
-
-from universal_parser import extract_visual_rows_v2 as extract_transactions
+from pdf_parser.universal_parser import extract_transactions
+import fitz
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://lighthouse-iq.vercel.app"],
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 @app.post("/parse-universal/")
 async def parse_universal(file: UploadFile = File(...)):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-        contents = await file.read()
-        tmp.write(contents)
-        tmp_path = tmp.name
-
-    # ✅ Pass the file path into the parser
-    transactions = extract_transactions(tmp_path)
-    return {"transactions": transactions}
+    contents = await file.read()
+    pdf = fitz.open(stream=contents, filetype="pdf")
+    text = "\n".join([page.get_text() for page in pdf])
+    parsed = extract_transactions(text)
+    return {"transactions": parsed}

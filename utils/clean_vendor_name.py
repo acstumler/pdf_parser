@@ -2,18 +2,15 @@ import re
 
 def clean_vendor_name(memo):
     if not memo or not isinstance(memo, str):
-        return "Unknown"
+        return ""
+    
+    # Cut off at first known date or card string
+    memo = re.split(r'\d{2}/\d{2}/\d{2,4}|T\s+\d{4}', memo)[0]
 
-    memo = memo.lower()
-    memo = re.sub(r'http\S+', '', memo)
-    memo = re.sub(r'\d{4,}', '', memo)
-    memo = re.sub(r'[^\w\s&.-]', '', memo)
-    memo = re.sub(r'\b(?:continued|summary|payment|total|denotes|charge|date|amount|ky|ny|ca|llc|inc|pay over time)\b', '', memo)
+    # Remove long digit sequences and common tokens
+    memo = re.sub(r'\b\d{6,}\b', '', memo)
+    memo = re.sub(r'[^a-zA-Z\s&.-]', '', memo)
+
+    # Normalize spacing and title case
     memo = re.sub(r'\s+', ' ', memo).strip()
-
-    words = memo.split()
-    if not words:
-        return "Unknown"
-
-    top = words[:4]
-    return " ".join(w.capitalize() for w in top)
+    return memo.title()
