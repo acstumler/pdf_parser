@@ -1,8 +1,8 @@
-import pdfplumber
 import re
+import pdfplumber
 from datetime import datetime, timedelta
-from utils.clean_vendor_name import clean_vendor_name
 from utils.classifyTransaction import classifyTransaction
+from utils.clean_vendor_name import clean_vendor_name
 
 def extract_statement_period(text):
     match = re.search(
@@ -23,8 +23,7 @@ def extract_statement_period(text):
     return None, None
 
 def extract_source_account(text):
-    header_lines = "\n".join(text.splitlines()[:25])
-    match = re.search(r'Account(?: Ending)?[\s:\-]*?(\d{4,6})', header_lines, re.IGNORECASE)
+    match = re.search(r'Account Ending[\s\-]*?(\d{4,6})', text, re.IGNORECASE)
     return f"AMEX {match.group(1)}" if match else "Unknown"
 
 def format_currency(amount):
@@ -49,17 +48,27 @@ def extract_visual_rows_v2(pdf_path):
             return []
 
         for page in pdf.pages:
-            table = page.extract_table()
-            if not table:
-                continue
+            words = page.extract_words(x_tolerance=1, y_tolerance=1)
+            rows = {}
 
-            for row in table:
-                if not row or len(row) < 3:
+            for word in words:
+                y = round(word["top"])
+                rows.setdefault(y, []).append(word)
+
+            for y_coord in sorted(rows.keys()):
+                line = rows[y_coord]
+                line.sort(key=lambda w: w["x0"])
+                text_line = " ".join(w["text"] for w in line)
+
+                date_match = re.match(r'^(\d{2}/\d{2}/\d{2,4})', text_line)
+                amount_match = re.search(r'[-]?\(?\$?([\d,]+\.\d{2})\)?$', text_line)
+
+                if not date_match or not amount_match:
                     continue
 
-                raw_date = row[0]
-                raw_amount = row[-1]
-                memo_text = " ".join(row[1:-1])
+                raw_date = date_match.group(1)
+                raw_amount = amount_match.group(1)
+                memo_text = text_line.replace(raw_date, "").replace(raw_amount, "").replace("$", "").strip()
 
                 try:
                     date_obj = datetime.strptime(raw_date, "%m/%d/%Y")
@@ -73,22 +82,19 @@ def extract_visual_rows_v2(pdf_path):
                     continue
 
                 try:
-                    amount = float(
-                        raw_amount.replace("$", "")
-                        .replace(",", "")
-                        .replace("(", "-")
-                        .replace(")", "")
-                    )
+                    amount = float(raw_amount.replace(",", ""))
+                    if "(" in text_line or "-" in text_line:
+                        amount *= -1
                 except:
                     continue
 
                 cleaned_memo = clean_vendor_name(memo_text)
-                account = classifyTransaction(cleaned_memo)
+                classification = classifyTransaction(cleaned_memo, amount).get("classification", "7090 - Uncategorized Expense")
 
                 transactions.append({
                     "date": format_date(date_obj),
                     "memo": cleaned_memo,
-                    "account": account,
+                    "account": classification,
                     "source": source_account,
                     "amount": format_currency(amount),
                 })
