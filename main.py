@@ -1,42 +1,32 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pdfplumber import open as open_pdf
-import shutil
-import os
-
 from universal_parser import extract_transactions
+import pdfplumber
+import tempfile
 
 app = FastAPI()
 
-# ✅ CORS middleware setup
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://lighthouse-iq.vercel.app",
-        "http://localhost:3000"
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 🧪 Health check route
-@app.get("/")
-def read_root():
-    return {"message": "LumiLedger PDF Parser is live!"}
-
-# 🔄 Parse PDF using the new universal parser
 @app.post("/parse-universal/")
 async def parse_universal(file: UploadFile = File(...)):
-    temp_file_path = "temp_uploaded.pdf"
-    
-    with open(temp_file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        contents = await file.read()
+        tmp.write(contents)
+        tmp_path = tmp.name
 
-    print(f"File written to {temp_file_path}")
-    
-    with open_pdf(temp_file_path) as pdf:
-        transactions = extract_transactions(pdf)
+    with pdfplumber.open(tmp_path) as pdf:
+        text_blocks = []
+        for page in pdf.pages:
+            lines = page.extract_text(y_tolerance=3, layout=True)
+            if lines:
+                text_blocks.extend(lines.split("\n"))
 
-    os.remove(temp_file_path)
+    transactions = extract_transactions(text_blocks)
     return {"transactions": transactions}
