@@ -3,7 +3,6 @@ import pdfplumber
 from datetime import datetime, timedelta
 
 def extract_statement_period(text):
-    # Match with optional line breaks or extra spacing
     closing_match = re.search(
         r'(Closing Date|Statement Date|Period Ending)[\s:\n\r]*?(\d{1,2}/\d{1,2}/\d{2,4})',
         text,
@@ -22,7 +21,6 @@ def extract_statement_period(text):
         except Exception as e:
             print(f"ERROR parsing standard closing date: {e}")
 
-    # Pattern 2: Oct 28 – Nov 27, 2023
     range_match = re.search(
         r'([A-Za-z]{3,9})[.\s]+(\d{1,2})\s*[–\-—]\s*([A-Za-z]{3,9})[.\s]+(\d{1,2}),?\s*(\d{4})',
         text,
@@ -58,63 +56,55 @@ def clean_memo(memo):
 
 def extract_transactions_visual(pdf_path, start_date=None, end_date=None, source="Unknown"):
     if not start_date or not end_date:
-        return []  # Skip parsing if date range is not defined
+        return []
 
     transactions = []
     seen_keys = set()
 
     with pdfplumber.open(pdf_path) as pdf:
+        full_text = ""
         for page in pdf.pages:
-            words = page.extract_words(x_tolerance=2, y_tolerance=1)
-            lines_by_y = {}
-            for word in words:
-                y = round(word["top"])
-                lines_by_y.setdefault(y, []).append(word)
+            full_text += page.extract_text() + "\n"
 
-            for y, words_on_line in sorted(lines_by_y.items()):
-                sorted_words = sorted(words_on_line, key=lambda w: w["x0"])
-                text_line = " ".join(w["text"] for w in sorted_words)
+    # Match lines like: 11/04/23 WALGREENS LOUISVILLE KY $20.66
+    line_pattern = re.compile(
+        r'(\d{2}/\d{2}/\d{2,4})\s+(.+?)\s+\$?(-?\(?[\d,]+\.\d{2}\)?)',
+        re.MULTILINE
+    )
+    matches = line_pattern.findall(full_text)
 
-                match = re.search(
-                    r'^(\d{2}/\d{2}/\d{2,4})\s+(.+?)\s+\$?(-?\(?[\d,]+\.\d{2}\)?)$',
-                    text_line
-                )
-                if not match:
-                    continue
+    for raw_date, raw_memo, raw_amount in matches:
+        try:
+            date_obj = datetime.strptime(raw_date, "%m/%d/%Y")
+        except ValueError:
+            try:
+                date_obj = datetime.strptime(raw_date, "%m/%d/%y")
+            except:
+                continue
 
-                raw_date, raw_memo, raw_amount = match.groups()
+        if not (start_date <= date_obj <= end_date):
+            continue
 
-                try:
-                    date_obj = datetime.strptime(raw_date, "%m/%d/%Y")
-                except ValueError:
-                    try:
-                        date_obj = datetime.strptime(raw_date, "%m/%d/%y")
-                    except:
-                        continue
+        amount_clean = raw_amount.replace(",", "").replace("(", "-").replace(")", "")
+        try:
+            amount_float = float(amount_clean)
+        except:
+            continue
 
-                if not (start_date <= date_obj <= end_date):
-                    continue
+        memo_cleaned = clean_memo(raw_memo)
 
-                amount_clean = raw_amount.replace(",", "").replace("(", "-").replace(")", "")
-                try:
-                    amount_float = float(amount_clean)
-                except:
-                    continue
+        key = (date_obj.strftime("%m/%d/%Y"), memo_cleaned, amount_float)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
 
-                memo_cleaned = clean_memo(raw_memo)
-
-                key = (date_obj.strftime("%m/%d/%Y"), memo_cleaned, amount_float)
-                if key in seen_keys:
-                    continue
-                seen_keys.add(key)
-
-                transactions.append({
-                    "date": date_obj.strftime("%m/%d/%Y"),
-                    "memo": memo_cleaned,
-                    "account": "Unknown",
-                    "source": source,
-                    "amount": amount_float
-                })
+        transactions.append({
+            "date": date_obj.strftime("%m/%d/%Y"),
+            "memo": memo_cleaned,
+            "account": "Unknown",
+            "source": source,
+            "amount": amount_float
+        })
 
     return transactions
 
