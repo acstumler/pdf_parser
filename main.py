@@ -1,12 +1,11 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from universal_parser import extract_transactions
-import pdfplumber
+from universal_parser import extract_visual_rows_v2 as extract_transactions
 import tempfile
 
 app = FastAPI()
 
-# ✅ Explicitly allow CORS from your deployed frontend
+# ✅ CORS settings for deployed frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://lighthouse-iq.vercel.app"],
@@ -22,12 +21,5 @@ async def parse_universal(file: UploadFile = File(...)):
         tmp.write(contents)
         tmp_path = tmp.name
 
-    with pdfplumber.open(tmp_path) as pdf:
-        text_blocks = []
-        for page in pdf.pages:
-            lines = page.extract_text(y_tolerance=3, layout=True)
-            if lines:
-                text_blocks.extend(lines.split("\n"))
-
-    transactions = extract_transactions(text_blocks)
+    transactions = extract_transactions(tmp_path)
     return {"transactions": transactions}
