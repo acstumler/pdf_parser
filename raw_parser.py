@@ -3,8 +3,12 @@ import pdfplumber
 from datetime import datetime, timedelta
 
 def extract_statement_period(text):
-    # Pattern 1: Closing Date / Statement Date / Period Ending
-    closing_match = re.search(r'(Closing Date|Statement Date|Period Ending)\s+(\d{1,2}/\d{1,2}/\d{2,4})', text, re.IGNORECASE)
+    # Match with optional line breaks or extra spacing
+    closing_match = re.search(
+        r'(Closing Date|Statement Date|Period Ending)[\s:\n\r]*?(\d{1,2}/\d{1,2}/\d{2,4})',
+        text,
+        re.IGNORECASE
+    )
     if closing_match:
         date_str = closing_match.group(2)
         try:
@@ -18,10 +22,11 @@ def extract_statement_period(text):
         except Exception as e:
             print(f"ERROR parsing standard closing date: {e}")
 
-    # Pattern 2: Natural language range (e.g., Oct 28 – Nov 27, 2023)
+    # Pattern 2: Oct 28 – Nov 27, 2023
     range_match = re.search(
         r'([A-Za-z]{3,9})[.\s]+(\d{1,2})\s*[–\-—]\s*([A-Za-z]{3,9})[.\s]+(\d{1,2}),?\s*(\d{4})',
-        text, re.IGNORECASE
+        text,
+        re.IGNORECASE
     )
     if range_match:
         try:
