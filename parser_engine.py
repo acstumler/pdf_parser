@@ -2,7 +2,7 @@ import os
 import tempfile
 from fastapi import UploadFile
 from raw_parser import extract_visual_rows_v2
-from classifyTransaction import classifyTransaction
+from classifytransaction import classifyTransaction  # ✅ lowercase import
 from clean_vendor_name import clean_vendor_name
 
 def extract_transactions(pdf_path: str, start_date: str = None, end_date: str = None, source: str = "Unknown"):
