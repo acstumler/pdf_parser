@@ -10,21 +10,18 @@ class AmexMultilineParser(BaseParser):
             print(f"[AmexMultilineParser] Failed to read file: {e}")
             return False
 
-        # Format-based detection only
-        has_dates = bool(re.search(r"\d{2}/\d{2}/\d{2,4}", text))
-        has_amounts = bool(re.search(r"\$\d{1,5}\.\d{2}", text))
-        has_account_ending = bool(re.search(r"Account Ending[^\d]*(\d{5})", text, re.IGNORECASE))
+        has_account = re.search(r"Account Ending[^\d]*(\d{5})", text, re.IGNORECASE)
+        has_dates = re.search(r"\d{2}/\d{2}/\d{2,4}", text)
+        has_dollar_signs = re.search(r"\$\d", text)
 
-        return has_dates and has_amounts and has_account_ending
+        print(f"[AmexMultilineParser] Detected has_account={bool(has_account)}, has_dates={bool(has_dates)}, has_amounts={bool(has_dollar_signs)}")
+        return bool(has_account and has_dates and has_dollar_signs)
 
     def parse(self, file_path: str) -> list[dict]:
         with open(file_path, "rb") as f:
-            text = f.read().decode(errors="ignore")
+            lines = f.read().decode(errors="ignore").splitlines()
 
-        source_match = re.search(r"Account Ending[^\d]*(\d{5})", text, re.IGNORECASE)
-        source = f"AMEX {source_match.group(1)}" if source_match else "Unknown"
-
-        lines = text.splitlines()
+        source = self.extract_source(lines)
         transactions = []
         current_block = []
 
@@ -45,11 +42,19 @@ class AmexMultilineParser(BaseParser):
         print(f"[AmexMultilineParser] Parsed {len(transactions)} transactions")
         return transactions
 
+    def extract_source(self, lines) -> str:
+        for line in lines:
+            match = re.search(r"Account Ending[^\d]*(\d{5})", line, re.IGNORECASE)
+            if match:
+                return f"AMEX {match.group(1)}"
+        return "Unknown"
+
     def is_transaction_start(self, line: str) -> bool:
         return bool(re.match(r"\d{2}/\d{2}/\d{2,4}", line.strip()))
 
     def parse_block(self, block, source):
         full_text = " ".join(block).strip()
+
         date_match = re.search(r"\d{2}/\d{2}/\d{2,4}", full_text)
         amount_match = re.search(r"\$?(-?\(?\d{1,4}(?:,\d{3})*(?:\.\d{2})\)?)", full_text)
 
@@ -60,11 +65,13 @@ class AmexMultilineParser(BaseParser):
         raw_amount = amount_match.group(1)
 
         try:
-            amount = round(float(raw_amount.replace("(", "-").replace(")", "").replace(",", "").replace("$", "")), 2)
-        except ValueError:
+            amount = float(raw_amount.replace("(", "-").replace(")", "").replace("$", "").replace(",", ""))
+        except:
             return None
 
-        memo = re.sub(r"[\s]{2,}", " ", full_text.replace(raw_date, "").replace(raw_amount, "")).strip()
+        memo = full_text.replace(raw_date, "").replace(raw_amount, "")
+        memo = re.sub(r"[\s]{2,}", " ", memo).strip()
+
         return {
             "date": raw_date,
             "memo": memo[:80] or "Unknown",
