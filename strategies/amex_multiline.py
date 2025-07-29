@@ -5,13 +5,18 @@ class AmexMultilineParser(BaseParser):
     def applies_to(self, file_path: str) -> bool:
         with open(file_path, "rb") as f:
             text = f.read().decode(errors="ignore")
-        return "Account Ending" in text and "AMERICAN EXPRESS" in text
+
+        # Structure-based detection (no brand dependency)
+        has_account = re.search(r"Account Ending[^\d]*(\d{5})", text, re.IGNORECASE)
+        has_multiline_block = re.search(r"\d{2}/\d{2}/\d{2,4}.*?\n.*?\$\d", text)
+
+        return bool(has_account and has_multiline_block)
 
     def parse(self, file_path: str) -> list[dict]:
         with open(file_path, "rb") as f:
             text = f.read().decode(errors="ignore")
 
-        source_match = re.search(r"Account Ending[^\d]*(\d{5})", text)
+        source_match = re.search(r"Account Ending[^\d]*(\d{5})", text, re.IGNORECASE)
         source = f"AMEX {source_match.group(1)}" if source_match else "Unknown"
 
         lines = text.splitlines()
