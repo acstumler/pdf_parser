@@ -1,79 +1,82 @@
-import fitz
 import re
 from .base_parser import BaseParser
 
-class AmexMultilineParser(BaseParser):
-    def __init__(self, path):
-        self.path = path
 
+class AmexMultilineParser(BaseParser):
     def parse(self):
         text = self.extract_text()
         lines = text.splitlines()
+
+        # Remove empty lines and strip whitespace
+        lines = [line.strip() for line in lines if line.strip()]
+
+        blocks = self.extract_transaction_blocks(lines)
+
         transactions = []
-
-        current = []
-        for line in lines:
-            if self.line_starts_transaction(line):
-                if current:
-                    tx = self.parse_block(current)
-                    if tx:
-                        transactions.append(tx)
-                    current = []
-            current.append(line)
-
-        if current:
-            tx = self.parse_block(current)
+        for block in blocks:
+            tx = self.parse_block(block)
             if tx:
                 transactions.append(tx)
 
         print(f"[AmexMultilineParser] Parsed {len(transactions)} transactions")
         return transactions
 
-    def line_starts_transaction(self, line):
-        return re.match(r"^\d{2}/\d{2}/\d{2}", line.strip())
+    def extract_transaction_blocks(self, lines):
+        """
+        Identify contiguous blocks of lines representing transactions.
+        Ignore metadata blocks (interest summary, APR tables, etc.).
+        """
+        blocks = []
+        current_block = []
+
+        for line in lines:
+            # Reject known metadata rows
+            if any(keyword in line for keyword in [
+                "Interest Charge", "Total Fees", "APR", "Annual Percentage", "Fees in 2023",
+                "Interest in 2023", "Pay Over Time Limit", "Cash Advances", "Total New Charges",
+                "2023 Fees", "Interest Totals", "Interest Calculation", "See page", "Rewards Points",
+                "Pay Over Time", "Statement Date", "Billing Period"
+            ]):
+                continue
+
+            # Detect start of transaction line (most have MM/DD/YY format)
+            if re.match(r"\d{2}/\d{2}/\d{2,4}", line):
+                if current_block:
+                    blocks.append(current_block)
+                    current_block = []
+            current_block.append(line)
+
+        if current_block:
+            blocks.append(current_block)
+
+        return blocks
 
     def parse_block(self, block):
         full_text = " ".join(block).strip()
-        date_match = re.search(r"\d{2}/\d{2}/\d{2}", full_text)
-        amount_match = re.search(r"(-?\$?\(?\d{1,3}(?:,\d{3})*(?:\.\d{2})\)?)", full_text)
+
+        date_match = re.search(r"(\d{2}/\d{2}/\d{2,4})", full_text)
+        amount_match = re.search(r"(-?\(?\d{1,4}(?:,\d{3})*(?:\.\d{2})\)?)", full_text)
 
         if not date_match or not amount_match:
             return None
 
-        date = date_match.group()
-        raw_amount = amount_match.group()
-        amount = self.clean_amount(raw_amount)
+        raw_date = date_match.group(1)
+        raw_amount = amount_match.group(1)
 
-        # Ensure amount is not malformed
-        if amount is None:
-            return None
-
-        # Memo logic: exclude rows with no alphanumeric characters after removing date/amount
-        memo = full_text.replace(date, "").replace(raw_amount, "").strip()
-        memo = re.sub(r"[\s]{2,}", " ", memo)
-        if not re.search(r"[A-Za-z0-9]", memo):
-            return None
-
-        return {
-            "date": date,
-            "memo": memo[:80],
-            "amount": amount,
-            "source": "AMEX 61005"
-        }
-
-    def clean_amount(self, raw):
-        clean = raw.replace("$", "").replace(",", "")
-        if "(" in clean and ")" in clean:
-            clean = "-" + clean.replace("(", "").replace(")", "")
+        # Clean and convert amount
+        clean_amount = raw_amount.replace("(", "-").replace(")", "").replace("$", "").replace(",", "")
         try:
-            return round(float(clean), 2)
+            amount = round(float(clean_amount), 2)
         except ValueError:
             return None
 
-    @staticmethod
-    def matches(text: str) -> bool:
-        return (
-            "AMERICAN EXPRESS" in text.upper()
-            and "SUMMARY" in text.upper()
-            and "PAYMENT" in text.upper()
-        )
+        # Remove date/amount from full text to isolate memo
+        memo_text = full_text.replace(raw_date, "").replace(raw_amount, "").strip()
+        memo_text = re.sub(r"[\s]{2,}", " ", memo_text)
+
+        return {
+            "date": raw_date,
+            "memo": memo_text[:100].strip() or "Unknown",
+            "amount": amount,
+            "source": "AMEX 61005"
+        }
