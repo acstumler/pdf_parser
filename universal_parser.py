@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from utils.classifyTransaction import classifyTransaction
 from utils.clean_vendor_name import clean_vendor_name
 
+
 def extract_statement_period(text):
     match = re.search(
         r'(Closing Date|Statement Date|Period Ending)[\s:\n\r]*?(\d{1,2}/\d{1,2}/\d{2,4})',
@@ -22,9 +23,11 @@ def extract_statement_period(text):
         return start_date, closing_date
     return None, None
 
+
 def extract_source_account(text):
     match = re.search(r'Account Ending[\s\-]*?(\d{4,6})', text, re.IGNORECASE)
     return f"AMEX {match.group(1)}" if match else "Unknown"
+
 
 def clean_memo(memo):
     memo = memo.strip()
@@ -33,6 +36,7 @@ def clean_memo(memo):
     stopwords = {"payment", "continued", "memo", "auth", "ref", "amount", "summary"}
     words = [w for w in memo.split() if w.lower() not in stopwords]
     return " ".join(words).title()
+
 
 def extract_transactions(pdf_path, start_date, end_date, source):
     transactions = []
@@ -85,7 +89,7 @@ def extract_transactions(pdf_path, start_date, end_date, source):
                 continue
             seen_keys.add(key)
 
-            classification = classifyTransaction(memo, amount_val).get("classification", "7090 - Uncategorized Expense")
+            classification = classifyTransaction(memo).get("classification", "7090 - Uncategorized Expense")
 
             transactions.append({
                 "date": date_obj.strftime("%m/%d/%y"),
@@ -97,6 +101,7 @@ def extract_transactions(pdf_path, start_date, end_date, source):
         i += 1
 
     return transactions
+
 
 def extract_visual_rows_v2(pdf_path):
     with pdfplumber.open(pdf_path) as pdf:
