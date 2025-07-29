@@ -1,7 +1,7 @@
 import os
 import tempfile
 from fastapi import UploadFile
-from raw_parser import extract_visual_rows_v2 as parse_raw_blocks
+from raw_parser import extract_visual_rows_v2
 from utils.classify_transaction import classifyTransaction
 from utils.clean_vendor_name import clean_vendor_name
 
@@ -15,10 +15,10 @@ async def save_upload_file_tmp(upload_file: UploadFile) -> str:
         print("Failed to save upload file:", e)
         raise
 
-async def extract_visual_rows_v2(file: UploadFile, start_date: str = None, end_date: str = None):
+async def extract_visual_rows_v2(file: UploadFile):
     tmp_path = await save_upload_file_tmp(file)
     try:
-        raw = parse_raw_blocks(tmp_path, start_date, end_date)  # ✅ removed `source=`
+        raw = extract_visual_rows_v2(tmp_path)  # ✅ now only one argument
 
         transactions = []
         for r in raw:
