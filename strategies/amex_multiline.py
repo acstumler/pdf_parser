@@ -6,14 +6,16 @@ class AmexMultilineParser(BaseParser):
         try:
             with open(file_path, "rb") as f:
                 text = f.read().decode(errors="ignore")
-            print("=== RAW PDF TEXT PREVIEW START ===")
-            print(text[:3000])  # Only preview the first 3000 characters
-            print("=== RAW PDF TEXT PREVIEW END ===")
+                lines = text.splitlines()
+                print("=== RAW PDF TEXT PREVIEW START ===")
+                print("\n".join(lines[:20]))
+                print("=== RAW PDF TEXT PREVIEW END ===")
+                print(f"[AmexMultilineParser] Total lines: {len(lines)}")
         except Exception as e:
             print(f"[AmexMultilineParser] Failed to read file: {e}")
             return False
 
-        # Always return True for now to ensure the parser runs
+        # Return True to allow parsing so we can test the actual data
         return True
 
     def parse(self, file_path: str) -> list[dict]:
