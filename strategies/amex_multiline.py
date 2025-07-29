@@ -2,6 +2,12 @@ import re
 import pdfplumber
 from .base_parser import BaseParser
 
+EXCLUDE_KEYWORDS = [
+    "MOBILE PAYMENT", "PAYMENT - THANK YOU",
+    "INTEREST CHARGE", "CREDIT BALANCE",
+    "LATE FEE", "RETURNED PAYMENT"
+]
+
 class AmexMultilineParser(BaseParser):
     def applies_to(self, file_path: str) -> bool:
         try:
@@ -63,6 +69,10 @@ class AmexMultilineParser(BaseParser):
 
     def parse_block(self, block, source):
         full_text = " ".join(block).strip()
+
+        # Filter out known non-merchant noise
+        if any(keyword in full_text.upper() for keyword in EXCLUDE_KEYWORDS):
+            return None
 
         date_match = re.search(r"\d{2}/\d{2}/\d{2,4}", full_text)
         amount_match = re.search(r"\$?(-?\(?\d{1,4}(?:,\d{3})*(?:\.\d{2})\)?)", full_text)
