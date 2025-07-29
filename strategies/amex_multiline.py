@@ -1,61 +1,58 @@
 import re
+from pdfplumber import open as pdfopen
 from .base_parser import BaseParser
 
-
 class AmexMultilineParser(BaseParser):
+    def __init__(self, path):
+        self.path = path
+
+    @staticmethod
+    def matches(text: str) -> bool:
+        return "AMERICAN EXPRESS" in text.upper() and "ACCOUNT ENDING" in text.upper()
+
+    def extract_text(self):
+        with pdfopen(self.path) as pdf:
+            return "\n".join(page.extract_text() for page in pdf.pages if page.extract_text())
+
     def parse(self):
         text = self.extract_text()
-        lines = text.splitlines()
-
-        # Remove empty lines and strip whitespace
-        lines = [line.strip() for line in lines if line.strip()]
-
-        blocks = self.extract_transaction_blocks(lines)
+        lines = text.split("\n")
 
         transactions = []
-        for block in blocks:
-            tx = self.parse_block(block)
-            if tx:
-                transactions.append(tx)
-
-        print(f"[AmexMultilineParser] Parsed {len(transactions)} transactions")
-        return transactions
-
-    def extract_transaction_blocks(self, lines):
-        """
-        Identify contiguous blocks of lines representing transactions.
-        Ignore metadata blocks (interest summary, APR tables, etc.).
-        """
-        blocks = []
         current_block = []
 
-        for line in lines:
-            # Reject known metadata rows
-            if any(keyword in line for keyword in [
-                "Interest Charge", "Total Fees", "APR", "Annual Percentage", "Fees in 2023",
-                "Interest in 2023", "Pay Over Time Limit", "Cash Advances", "Total New Charges",
-                "2023 Fees", "Interest Totals", "Interest Calculation", "See page", "Rewards Points",
-                "Pay Over Time", "Statement Date", "Billing Period"
-            ]):
-                continue
+        def is_valid_line(line):
+            if re.match(r"\d{2}/\d{2}/\d{2,4}", line.strip()):
+                return True
+            return False
 
-            # Detect start of transaction line (most have MM/DD/YY format)
-            if re.match(r"\d{2}/\d{2}/\d{2,4}", line):
+        for line in lines:
+            if is_valid_line(line):
                 if current_block:
-                    blocks.append(current_block)
+                    tx = self._parse_block(current_block)
+                    if tx:
+                        transactions.append(tx)
                     current_block = []
             current_block.append(line)
 
         if current_block:
-            blocks.append(current_block)
+            tx = self._parse_block(current_block)
+            if tx:
+                transactions.append(tx)
 
-        return blocks
+        return transactions
 
-    def parse_block(self, block):
+    def _parse_block(self, block):
         full_text = " ".join(block).strip()
 
+        # Reject known metadata rows
+        if any(exclusion in full_text.lower() for exclusion in [
+            "interest charge", "interest charged", "interest calculation", "apr", "fees in 2023", "minimum payment"
+        ]):
+            return None
+
         date_match = re.search(r"(\d{2}/\d{2}/\d{2,4})", full_text)
-        amount_match = re.search(r"(-?\(?\d{1,4}(?:,\d{3})*(?:\.\d{2})\)?)", full_text)
+        amount_match = re.search(r"\$?(-?\(?\d{1,4}(?:,\d{3})*(?:\.\d{2})\)?)", full_text)
 
         if not date_match or not amount_match:
             return None
@@ -63,20 +60,19 @@ class AmexMultilineParser(BaseParser):
         raw_date = date_match.group(1)
         raw_amount = amount_match.group(1)
 
-        # Clean and convert amount
         clean_amount = raw_amount.replace("(", "-").replace(")", "").replace("$", "").replace(",", "")
         try:
             amount = round(float(clean_amount), 2)
         except ValueError:
             return None
 
-        # Remove date/amount from full text to isolate memo
         memo_text = full_text.replace(raw_date, "").replace(raw_amount, "").strip()
         memo_text = re.sub(r"[\s]{2,}", " ", memo_text)
+        memo = memo_text[:80].strip() or "Unknown"
 
         return {
             "date": raw_date,
-            "memo": memo_text[:100].strip() or "Unknown",
+            "memo": memo,
             "amount": amount,
             "source": "AMEX 61005"
         }
