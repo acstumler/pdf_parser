@@ -44,12 +44,19 @@ class AmexMultilineParser(BaseParser):
         raw_amount = amount_match.group()
         amount = self.clean_amount(raw_amount)
 
+        # Ensure amount is not malformed
+        if amount is None:
+            return None
+
+        # Memo logic: exclude rows with no alphanumeric characters after removing date/amount
         memo = full_text.replace(date, "").replace(raw_amount, "").strip()
-        memo = re.sub(r"[\s]{2,}", " ", memo)[:80]
+        memo = re.sub(r"[\s]{2,}", " ", memo)
+        if not re.search(r"[A-Za-z0-9]", memo):
+            return None
 
         return {
             "date": date,
-            "memo": memo,
+            "memo": memo[:80],
             "amount": amount,
             "source": "AMEX 61005"
         }
