@@ -1,107 +1,54 @@
-import re
-from datetime import datetime
-from pdfminer.high_level import extract_text
-from pdf2image import convert_from_path
-import pytesseract
-from io import BytesIO
-from PIL import Image
+import os
+import tempfile
+from fastapi import UploadFile
+from raw_parser import extract_visual_rows_v2
+from clean_vendor_name import clean_vendor_name
+from classifyTransaction import classifyTransaction
 
-def extract_text_from_pdf(path):
+def extract_transactions(pdf_path: str, start_date: str = None, end_date: str = None, source: str = "Unknown"):
+    return extract_visual_rows_v2(pdf_path, start_date, end_date, source)
+
+async def save_upload_file_tmp(upload_file: UploadFile) -> str:
     try:
-        text = extract_text(path)
-        if text and len(text.strip()) > 50:
-            return text
-        else:
-            return extract_text_via_ocr(path)
-    except Exception:
-        return extract_text_via_ocr(path)
+        suffix = os.path.splitext(upload_file.filename)[1]
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(await upload_file.read())
+            return tmp.name
+    except Exception as e:
+        print("Failed to save upload file:", e)
+        raise
 
-def extract_text_via_ocr(path):
-    images = convert_from_path(path)
-    full_text = ""
-    for img in images:
-        buffered = BytesIO()
-        img.save(buffered, format="JPEG")
-        text = pytesseract.image_to_string(Image.open(buffered))
-        full_text += text + "\n"
-    return full_text
+async def extract_visual_rows_v2(file: UploadFile, start_date: str = None, end_date: str = None):
+    tmp_path = await save_upload_file_tmp(file)
+    try:
+        raw = extract_transactions(tmp_path, start_date, end_date, source="Unknown")
 
-def extract_statement_period(text):
-    date_range_pattern = re.compile(r'([A-Za-z]{3,9})[\s\-–]+(\d{1,2})[\s\-–]+[–\-—][\s\-–]+([A-Za-z]{3,9})[\s\-–]+(\d{1,2}),\s*(\d{4})')
-    match = date_range_pattern.search(text)
-    if match:
-        try:
-            month1, day1, month2, day2, year = match.groups()
-            start_date = datetime.strptime(f"{month1} {day1} {year}", "%b %d %Y")
-            end_date = datetime.strptime(f"{month2} {day2} {year}", "%b %d %Y")
-            return start_date, end_date
-        except:
-            return None, None
-    return None, None
+        transactions = []
+        for r in raw:
+            date = r.get("date", "")
+            memo = r.get("memo", "")
+            amount = r.get("amount", "")
+            source = r.get("source", "Unknown")
 
-def extract_source_account(text):
-    match = re.search(r'Account Ending[\s\-]*?(\d{5})', text, re.IGNORECASE)
-    if match:
-        return f"AMEX {match.group(1)}"
-    return "Unknown"
+            memo_clean = clean_vendor_name(memo)
 
-def extract_transactions(text, start_date=None, end_date=None, source="Unknown"):
-    transaction_pattern = re.compile(
-        r'(\d{2}/\d{2}/\d{2,4})\s+([^\n]*?)\s+\$?(-?\(?\d{1,4}(?:,\d{3})*(?:\.\d{2})?\)?)',
-        re.MULTILINE
-    )
-    matches = transaction_pattern.findall(text)
-    transactions = []
-
-    for match in matches:
-        raw_date, raw_memo, raw_amount = match
-
-        try:
-            date_obj = datetime.strptime(raw_date, "%m/%d/%Y")
-        except ValueError:
             try:
-                date_obj = datetime.strptime(raw_date, "%m/%d/%y")
+                amount_val = float(str(amount).replace("(", "-").replace(")", "").replace(",", "").replace("$", ""))
             except:
-                continue
+                amount_val = 0.0
 
-        if start_date and end_date:
-            if not (start_date <= date_obj <= end_date):
-                continue
+            classification = classifyTransaction(memo_clean, amount_val).get("classification", "7090 - Uncategorized Expense")
+            formatted_amount = f"(${abs(amount_val):,.2f})" if amount_val < 0 else f"${amount_val:,.2f}"
 
-        amount_clean = raw_amount.replace(',', '').replace('(', '-').replace(')', '')
-        try:
-            amount_float = float(amount_clean)
-        except:
-            continue
+            transactions.append({
+                "date": date,
+                "memo": memo_clean,
+                "account": classification,
+                "source": source,
+                "amount": formatted_amount,
+            })
 
-        amount_formatted = f"${abs(amount_float):,.2f}"
-        if amount_float < 0:
-            amount_formatted = f"(${abs(amount_float):,.2f})"
+        return transactions
 
-        memo_cleaned = clean_memo(raw_memo)
-
-        transactions.append({
-            "date": date_obj.strftime("%m/%d/%Y"),
-            "memo": memo_cleaned,
-            "account": "Unknown",
-            "source": source,
-            "amount": amount_formatted
-        })
-
-    return transactions
-
-def clean_memo(memo):
-    memo = memo.strip()
-    memo = re.sub(r'\*+', '', memo)
-    memo = re.sub(r'\d{4,}', '', memo)  # Remove long numeric codes
-    memo = re.sub(r'[^\w\s&.,/-]', '', memo)
-    words = memo.split()
-    filtered = [w for w in words if w.lower() not in ("aplpay", "tst", "store", "inc", "llc", "co")]
-    return " ".join(filtered).title()
-
-def parse_pdf(path):
-    text = extract_text_from_pdf(path)
-    start_date, end_date = extract_statement_period(text)
-    source = extract_source_account(text)
-    transactions = extract_transactions(text, start_date, end_date, source)
-    return transactions
+    finally:
+        os.remove(tmp_path)

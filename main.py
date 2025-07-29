@@ -1,7 +1,7 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 import tempfile
-from universal_parser import extract_visual_rows_v2 as extract_transactions
+from parser_engine import extract_visual_rows_v2 as extract_transactions
 
 app = FastAPI()
 
@@ -20,5 +20,5 @@ async def parse_universal(file: UploadFile = File(...)):
         tmp.write(contents)
         tmp_path = tmp.name
 
-    transactions = extract_transactions(tmp_path)
+    transactions = await extract_transactions(file)
     return {"transactions": transactions}
