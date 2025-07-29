@@ -1,14 +1,13 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 import tempfile
-import shutil
-from universal_parser import extract_transactions
+from universal_parser import extract_visual_rows_v2 as extract_transactions
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://lighthouse-iq.vercel.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -16,8 +15,9 @@ app.add_middleware(
 
 @app.post("/parse-universal/")
 async def parse_universal(file: UploadFile = File(...)):
-    with tempfile.NamedTemporaryFile(delete=False) as tmp:
-        shutil.copyfileobj(file.file, tmp)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        contents = await file.read()
+        tmp.write(contents)
         tmp_path = tmp.name
 
     transactions = extract_transactions(tmp_path)
