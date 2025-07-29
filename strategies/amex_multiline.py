@@ -22,7 +22,11 @@ class AmexMultilineParser(BaseParser):
         current_block = []
 
         def is_valid_line(line):
-            return bool(re.match(r"\d{2}/\d{2}/\d{2,4}", line.strip()))
+            line = line.strip()
+            # Loosen rule: must start with a date and contain a dollar sign
+            if re.match(r"^\d{2}/\d{2}/\d{2,4}", line) and "$" in line:
+                return True
+            return False
 
         for line in lines:
             if is_valid_line(line):
@@ -33,6 +37,7 @@ class AmexMultilineParser(BaseParser):
                     current_block = []
             current_block.append(line)
 
+        # Catch final transaction block
         if current_block:
             tx = self._parse_block(current_block)
             if tx:
@@ -42,6 +47,8 @@ class AmexMultilineParser(BaseParser):
 
     def _parse_block(self, block):
         full_text = " ".join(block).strip()
+
+        # Reject metadata rows
         if any(exclusion in full_text.lower() for exclusion in [
             "interest charge", "interest charged", "interest calculation", "apr", "fees in 2023", "minimum payment"
         ]):
@@ -55,6 +62,7 @@ class AmexMultilineParser(BaseParser):
 
         raw_date = date_match.group(1)
         raw_amount = amount_match.group(1)
+
         clean_amount = raw_amount.replace("(", "-").replace(")", "").replace("$", "").replace(",", "")
 
         try:
