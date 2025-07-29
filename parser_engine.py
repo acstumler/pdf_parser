@@ -18,7 +18,7 @@ async def save_upload_file_tmp(upload_file: UploadFile) -> str:
 async def extract_visual_rows_v2(file: UploadFile, start_date: str = None, end_date: str = None):
     tmp_path = await save_upload_file_tmp(file)
     try:
-        raw = parse_raw_blocks(tmp_path, start_date, end_date, source="Unknown")
+        raw = parse_raw_blocks(tmp_path, start_date, end_date)  # ✅ removed `source=`
 
         transactions = []
         for r in raw:
