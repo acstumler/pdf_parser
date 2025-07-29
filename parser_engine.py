@@ -18,7 +18,7 @@ async def save_upload_file_tmp(upload_file: UploadFile) -> str:
 async def extract_visual_rows_v2(file: UploadFile):
     tmp_path = await save_upload_file_tmp(file)
     try:
-        raw = extract_visual_rows_v2(tmp_path)  # ✅ now only one argument
+        raw = await extract_visual_rows_v2(tmp_path)  # ✅ await the coroutine
 
         transactions = []
         for r in raw:
