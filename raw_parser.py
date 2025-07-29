@@ -9,38 +9,49 @@ def extract_visual_rows_v2(file_path):
     current_block = []
 
     for line in lines:
-        if re.search(r"\d{2}/\d{2}/\d{2,4}", line) and re.search(r"\$\d", line):
+        if is_transaction_start(line):
             if current_block:
-                transactions.append(parse_block(current_block))
+                tx = parse_block(current_block)
+                if tx:
+                    transactions.append(tx)
                 current_block = []
         current_block.append(line)
 
     if current_block:
-        transactions.append(parse_block(current_block))
+        tx = parse_block(current_block)
+        if tx:
+            transactions.append(tx)
 
-    return [tx for tx in transactions if tx]
+    return transactions
+
+def is_transaction_start(line):
+    return bool(re.match(r"\d{2}/\d{2}/\d{2,4}", line.strip()))
 
 def parse_block(block):
-    text = " ".join(block)
-    date_match = re.search(r"\d{2}/\d{2}/\d{2,4}", text)
-    amt_match = re.search(r"-?\$?\(?\d+[\.,]?\d*\)?", text)
+    full_text = " ".join(block).strip()
+    date_match = re.search(r"(\d{2}/\d{2}/\d{2,4})", full_text)
+    amount_match = re.search(r"\$?(-?\(?\d{1,4}(?:,\d{3})*(?:\.\d{2})\)?)", full_text)
 
-    if not date_match or not amt_match:
+    if not date_match or not amount_match:
         return None
 
-    date = date_match.group(0)
-    raw_amount = amt_match.group(0)
+    raw_date = date_match.group(1)
+    raw_amount = amount_match.group(1)
+
     clean_amount = raw_amount.replace("(", "-").replace(")", "").replace("$", "").replace(",", "")
-    
     try:
         amount = round(float(clean_amount), 2)
     except ValueError:
         return None
 
-    memo = text
+    # Remove the date and amount from the full text to isolate memo
+    memo_text = full_text.replace(raw_date, "").replace(raw_amount, "").strip()
+    memo_text = re.sub(r"[\s]{2,}", " ", memo_text)
+    memo = memo_text[:80].strip() or "Unknown"
+
     return {
-        "date": date,
+        "date": raw_date,
         "memo": memo,
         "amount": amount,
-        "source": "Unknown"
+        "source": "AMEX 61005"
     }
