@@ -2,8 +2,10 @@ import fitz
 import re
 from .base_parser import BaseParser
 
-
 class AmexMultilineParser(BaseParser):
+    def __init__(self, path):
+        self.path = path
+
     def parse(self):
         text = self.extract_text()
         lines = text.splitlines()
