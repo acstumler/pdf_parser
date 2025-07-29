@@ -1,10 +1,10 @@
 import os
-from raw_parser import extract_visual_rows_v2
+from raw_parser import extract_visual_rows_v2 as extract_raw_blocks
 from utils.classify_transaction import classifyTransaction
 from utils.clean_vendor_name import clean_vendor_name
 
-async def extract_visual_rows_v2(file_path: str):
-    raw = extract_visual_rows_v2(file_path)  # accepts string path
+async def parse_and_classify(file_path: str):
+    raw = extract_raw_blocks(file_path)
 
     transactions = []
     for r in raw:
