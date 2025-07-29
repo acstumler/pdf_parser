@@ -1,6 +1,12 @@
-class BaseParser:
-    def applies_to(self, file_path: str) -> bool:
-        raise NotImplementedError
+import fitz  # PyMuPDF
 
-    def parse(self, file_path: str) -> list[dict]:
-        raise NotImplementedError
+class BaseParser:
+    def __init__(self, path):
+        self.path = path
+
+    def extract_text(self):
+        with fitz.open(self.path) as doc:
+            text = ""
+            for page in doc:
+                text += page.get_text()
+        return text
