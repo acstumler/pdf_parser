@@ -6,11 +6,12 @@ class AmexMultilineParser(BaseParser):
         with open(file_path, "rb") as f:
             text = f.read().decode(errors="ignore")
 
-        # Structure-based detection (no brand dependency)
+        # General structural detection — works across AMEX variants
+        has_dates = re.search(r"\d{2}/\d{2}/\d{2,4}", text)
+        has_amounts = re.search(r"\$\d{1,5}\.\d{2}", text)
         has_account = re.search(r"Account Ending[^\d]*(\d{5})", text, re.IGNORECASE)
-        has_multiline_block = re.search(r"\d{2}/\d{2}/\d{2,4}.*?\n.*?\$\d", text)
 
-        return bool(has_account and has_multiline_block)
+        return bool(has_dates and has_amounts and has_account)
 
     def parse(self, file_path: str) -> list[dict]:
         with open(file_path, "rb") as f:
