@@ -10,12 +10,13 @@ class AmexMultilineParser(BaseParser):
             print(f"[AmexMultilineParser] Failed to read file: {e}")
             return False
 
-        has_account = re.search(r"Account Ending[^\d]*(\d{5})", text, re.IGNORECASE)
-        has_dates = re.search(r"\d{2}/\d{2}/\d{2,4}", text)
-        has_dollar_signs = re.search(r"\$\d", text)
+        has_account = bool(re.search(r"Account Ending[^\d]*(\d{4,6})", text, re.IGNORECASE))
+        has_dates = bool(re.search(r"\d{2}/\d{2}/\d{2,4}", text))
+        has_amounts = bool(re.search(r"\$\d{1,5}\.\d{2}", text))
 
-        print(f"[AmexMultilineParser] Detected has_account={bool(has_account)}, has_dates={bool(has_dates)}, has_amounts={bool(has_dollar_signs)}")
-        return bool(has_account and has_dates and has_dollar_signs)
+        print(f"[AmexMultilineParser] Detected has_account={has_account}, has_dates={has_dates}, has_amounts={has_amounts}")
+
+        return sum([has_account, has_dates, has_amounts]) >= 2
 
     def parse(self, file_path: str) -> list[dict]:
         with open(file_path, "rb") as f:
@@ -44,7 +45,7 @@ class AmexMultilineParser(BaseParser):
 
     def extract_source(self, lines) -> str:
         for line in lines:
-            match = re.search(r"Account Ending[^\d]*(\d{5})", line, re.IGNORECASE)
+            match = re.search(r"Account Ending[^\d]*(\d{4,6})", line, re.IGNORECASE)
             if match:
                 return f"AMEX {match.group(1)}"
         return "Unknown"
