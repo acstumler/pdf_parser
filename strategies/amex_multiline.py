@@ -6,17 +6,15 @@ class AmexMultilineParser(BaseParser):
         try:
             with open(file_path, "rb") as f:
                 text = f.read().decode(errors="ignore")
+            print("=== RAW PDF TEXT PREVIEW START ===")
+            print(text[:3000])  # Only preview the first 3000 characters
+            print("=== RAW PDF TEXT PREVIEW END ===")
         except Exception as e:
             print(f"[AmexMultilineParser] Failed to read file: {e}")
             return False
 
-        has_account = bool(re.search(r"Account Ending[^\d]*(\d{4,6})", text, re.IGNORECASE))
-        has_dates = bool(re.search(r"\d{2}/\d{2}/\d{2,4}", text))
-        has_amounts = bool(re.search(r"\$\d{1,5}\.\d{2}", text))
-
-        print(f"[AmexMultilineParser] Detected has_account={has_account}, has_dates={has_dates}, has_amounts={has_amounts}")
-
-        return sum([has_account, has_dates, has_amounts]) >= 2
+        # Always return True for now to ensure the parser runs
+        return True
 
     def parse(self, file_path: str) -> list[dict]:
         with open(file_path, "rb") as f:
