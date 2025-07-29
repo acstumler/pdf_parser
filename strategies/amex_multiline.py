@@ -1,26 +1,34 @@
 import re
+import pdfplumber
 from .base_parser import BaseParser
 
 class AmexMultilineParser(BaseParser):
     def applies_to(self, file_path: str) -> bool:
         try:
-            with open(file_path, "rb") as f:
-                text = f.read().decode(errors="ignore")
-                lines = text.splitlines()
-                print("=== RAW PDF TEXT PREVIEW START ===")
-                print("\n".join(lines[:20]))
-                print("=== RAW PDF TEXT PREVIEW END ===")
-                print(f"[AmexMultilineParser] Total lines: {len(lines)}")
+            with pdfplumber.open(file_path) as pdf:
+                all_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
         except Exception as e:
-            print(f"[AmexMultilineParser] Failed to read file: {e}")
+            print(f"[AmexMultilineParser] PDFPlumber failed: {e}")
             return False
 
-        # Return True to allow parsing so we can test the actual data
-        return True
+        has_account = bool(re.search(r"Account Ending[^\d]*(\d{4,6})", all_text, re.IGNORECASE))
+        has_dates = bool(re.search(r"\d{2}/\d{2}/\d{2,4}", all_text))
+        has_amounts = bool(re.search(r"\$\d{1,5}\.\d{2}", all_text))
+
+        print(f"[AmexMultilineParser] Detected has_account={has_account}, has_dates={has_dates}, has_amounts={has_amounts}")
+        return sum([has_account, has_dates, has_amounts]) >= 2
 
     def parse(self, file_path: str) -> list[dict]:
-        with open(file_path, "rb") as f:
-            lines = f.read().decode(errors="ignore").splitlines()
+        try:
+            with pdfplumber.open(file_path) as pdf:
+                lines = []
+                for page in pdf.pages:
+                    text = page.extract_text()
+                    if text:
+                        lines.extend(text.splitlines())
+        except Exception as e:
+            print(f"[AmexMultilineParser] Failed to extract PDF text: {e}")
+            return []
 
         source = self.extract_source(lines)
         transactions = []
