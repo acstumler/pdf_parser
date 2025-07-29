@@ -1,20 +1,20 @@
-from strategies import STRATEGY_CLASSES, AmexMultilineParser
+import os
+import fitz  # PyMuPDF
+from strategies.amex_multiline import AmexMultilineParser
 
-def detect_and_parse(file_path: str) -> list[dict]:
-    print(f"[ParserEngine] Running parser detection on: {file_path}")
-    attempted = []
+STRATEGIES = [
+    AmexMultilineParser,
+]
 
-    for strategy_class in STRATEGY_CLASSES:
-        parser = strategy_class()
-        try:
-            if parser.applies_to(file_path):
-                print(f"[ParserEngine] Using {parser.__class__.__name__}")
-                return parser.parse(file_path)
-            else:
-                attempted.append(parser.__class__.__name__)
-        except Exception as e:
-            print(f"[ParserEngine] Error in {parser.__class__.__name__}: {e}")
+def detect_and_parse(path):
+    with fitz.open(path) as doc:
+        raw_text = "\n".join(page.get_text() for page in doc)
 
-    print(f"[ParserEngine] No strategy matched. Tried: {attempted}")
-    print("[ParserEngine] Fallback: forcing AmexMultilineParser for dev testing")
-    return AmexMultilineParser().parse(file_path)
+    print(f"[ParserEngine] Running parser detection on: {path}")
+    for strategy_class in STRATEGIES:
+        if strategy_class.matches(raw_text):
+            print(f"[ParserEngine] Using {strategy_class.__name__}")
+            parser = strategy_class(path)
+            return parser.parse()
+
+    raise Exception("No suitable parser found for this document.")
