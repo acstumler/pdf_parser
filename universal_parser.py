@@ -1,4 +1,4 @@
-from raw_parser import extract_visual_rows_v2
+from parser_engine import detect_and_parse
 
 def extract_transactions(path):
-    return extract_visual_rows_v2(path)
+    return detect_and_parse(path)

@@ -22,9 +22,7 @@ class AmexMultilineParser(BaseParser):
         current_block = []
 
         def is_valid_line(line):
-            if re.match(r"\d{2}/\d{2}/\d{2,4}", line.strip()):
-                return True
-            return False
+            return bool(re.match(r"\d{2}/\d{2}/\d{2,4}", line.strip()))
 
         for line in lines:
             if is_valid_line(line):
@@ -44,8 +42,6 @@ class AmexMultilineParser(BaseParser):
 
     def _parse_block(self, block):
         full_text = " ".join(block).strip()
-
-        # Reject known metadata rows
         if any(exclusion in full_text.lower() for exclusion in [
             "interest charge", "interest charged", "interest calculation", "apr", "fees in 2023", "minimum payment"
         ]):
@@ -59,8 +55,8 @@ class AmexMultilineParser(BaseParser):
 
         raw_date = date_match.group(1)
         raw_amount = amount_match.group(1)
-
         clean_amount = raw_amount.replace("(", "-").replace(")", "").replace("$", "").replace(",", "")
+
         try:
             amount = round(float(clean_amount), 2)
         except ValueError:
