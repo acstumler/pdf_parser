@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: lumi-pdf-parser
+    env: docker
+    dockerfilePath: ./pdf_parser/Dockerfile
+    autoDeploy: true
