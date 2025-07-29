@@ -1,12 +1,9 @@
 import os
 import tempfile
 from fastapi import UploadFile
-from raw_parser import extract_visual_rows_v2
+from raw_parser import extract_visual_rows_v2 as parse_raw_blocks
 from utils.classify_transaction import classifyTransaction
 from utils.clean_vendor_name import clean_vendor_name
-
-def extract_transactions(pdf_path: str, start_date: str = None, end_date: str = None, source: str = "Unknown"):
-    return extract_visual_rows_v2(pdf_path, start_date, end_date, source)
 
 async def save_upload_file_tmp(upload_file: UploadFile) -> str:
     try:
@@ -21,7 +18,7 @@ async def save_upload_file_tmp(upload_file: UploadFile) -> str:
 async def extract_visual_rows_v2(file: UploadFile, start_date: str = None, end_date: str = None):
     tmp_path = await save_upload_file_tmp(file)
     try:
-        raw = extract_transactions(tmp_path, start_date, end_date, source="Unknown")
+        raw = parse_raw_blocks(tmp_path, start_date, end_date, source="Unknown")
 
         transactions = []
         for r in raw:
