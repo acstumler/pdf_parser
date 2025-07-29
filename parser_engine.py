@@ -2,8 +2,8 @@ import os
 import tempfile
 from fastapi import UploadFile
 from raw_parser import extract_visual_rows_v2
-from classify_transaction import classifyTransaction
-from clean_vendor_name import clean_vendor_name
+from utils.classify_transaction import classifyTransaction
+from utils.clean_vendor_name import clean_vendor_name
 
 def extract_transactions(pdf_path: str, start_date: str = None, end_date: str = None, source: str = "Unknown"):
     return extract_visual_rows_v2(pdf_path, start_date, end_date, source)
