@@ -31,8 +31,7 @@ class AmexMultilineParser(BaseParser):
                 print(page_text or "[EMPTY]")
                 if page_text:
                     text.append(page_text)
-                    # More flexible match for account ending structure (e.g. "Account Ending2-61005")
-                    match = re.search(r"Account\s*Ending[^\d]*(\d{5})", page_text, re.IGNORECASE)
+                    match = re.search(r"Account\s*Ending[-\s]*(?:\d-)?(\d{5})", page_text, re.IGNORECASE)
                     if match:
                         self.account_source = f"AMEX {match.group(1)}"
                         print(f"[DEBUG] Extracted Source: {self.account_source}")
