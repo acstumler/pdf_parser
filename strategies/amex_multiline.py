@@ -1,7 +1,7 @@
 import re
 from pdfplumber import open as pdfopen
 from .base_parser import BaseParser
-from ..utils.clean_vendor_name import clean_vendor_name
+from utils.clean_vendor_name import clean_vendor_name
 
 class AmexMultilineParser(BaseParser):
     def __init__(self, path):
