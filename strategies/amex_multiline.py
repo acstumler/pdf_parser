@@ -70,7 +70,7 @@ class AmexMultilineParser(BaseParser):
         full_text = " ".join(block).strip()
 
         date_match = re.search(r"(\d{2}/\d{2}/\d{2,4})", full_text)
-        amount_match = re.search(r"\$?(-?\(?\d{1,4}(?:,\d{3})*(?:\.\d{2})\)?)", full_text)
+        amount_match = re.search(r"(-?\$?\(?\d{1,4}(?:,\d{3})*(?:\.\d{2})\)?)", full_text)
 
         if not date_match or not amount_match:
             return None
@@ -78,7 +78,14 @@ class AmexMultilineParser(BaseParser):
         raw_date = date_match.group(1)
         raw_amount = amount_match.group(1)
 
-        clean_amount = raw_amount.replace("(", "-").replace(")", "").replace("$", "").replace(",", "")
+        clean_amount = (
+            raw_amount.replace("(", "-")
+            .replace(")", "")
+            .replace("$", "")
+            .replace(",", "")
+            .strip()
+        )
+
         try:
             amount = round(float(clean_amount), 2)
         except ValueError:
