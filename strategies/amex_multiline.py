@@ -9,13 +9,11 @@ class AmexMultilineParser(BaseParser):
 
     @staticmethod
     def matches(text: str) -> bool:
-        # Structure-only detection (no vendor names)
         has_dates_and_amounts = bool(re.search(r"\d{2}/\d{2}/\d{2,4}.*\$-?\(?\d", text))
         has_fee_section_structure = bool(re.search(r"Total\s+Fees\s+for\s+this\s+Period", text, re.IGNORECASE))
         has_interest_section_structure = bool(re.search(r"Interest\s+Charged", text, re.IGNORECASE))
         has_posted_dollar_asterisk = bool(re.search(r"\$\d+\.\d{2}\*", text))  # e.g. "$62.00*"
 
-        # Require at least 2 structure-based cues
         score = sum([
             has_dates_and_amounts,
             has_fee_section_structure,
@@ -66,7 +64,6 @@ class AmexMultilineParser(BaseParser):
     def _parse_block(self, block):
         full_text = " ".join(block).strip()
 
-        # No exclusion filters — every valid entry is kept
         date_match = re.search(r"(\d{2}/\d{2}/\d{2,4})", full_text)
         amount_match = re.search(r"\$?(-?\(?\d{1,4}(?:,\d{3})*(?:\.\d{2})\)?)", full_text)
 
@@ -85,6 +82,12 @@ class AmexMultilineParser(BaseParser):
         memo_text = full_text.replace(raw_date, "").replace(raw_amount, "").strip()
         memo_text = re.sub(r"[\s]{2,}", " ", memo_text)
         memo = memo_text[:80].strip() or "Unknown"
+
+        # ✅ Filter false positives
+        if re.fullmatch(r"[\d\.\s-]+", memo):
+            return None
+        if memo.lower() in ["unknown", "", "$", "-", "–"]:
+            return None
 
         return {
             "date": raw_date,
