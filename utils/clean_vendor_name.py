@@ -9,4 +9,9 @@ def clean_vendor_name(raw_memo):
     memo = re.sub(r"\b\w{1,2}\b", "", memo)
     memo = re.sub(r"\s{2,}", " ", memo).strip()
 
-    return memo.split(" ")[0].title() if memo else "Unknown Vendor"
+    words = memo.split()
+    if not words:
+        return "Unknown Vendor"
+
+    condensed = " ".join(words[:3])
+    return condensed.title()
