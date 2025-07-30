@@ -1,6 +1,7 @@
 import re
 from pdfplumber import open as pdfopen
 from .base_parser import BaseParser
+from ..utils.clean_vendor_name import clean_vendor_name
 
 class AmexMultilineParser(BaseParser):
     def __init__(self, path):
@@ -93,13 +94,14 @@ class AmexMultilineParser(BaseParser):
 
         memo_text = full_text.replace(raw_date, "").replace(raw_amount, "").strip()
         memo_text = re.sub(r"[\s]{2,}", " ", memo_text)
-        memo = memo_text[:80].strip() or "Unknown"
+        memo_raw = memo_text[:80].strip() or "Unknown"
+        memo = clean_vendor_name(memo_raw)
 
-        if re.search(r"(new balance|min.*payment|membership rewards|account summary|customer care|gold card|p\.\s*\d+/)", memo.lower()):
+        if re.search(r"(new balance|min.*payment|membership rewards|account summary|customer care|gold card|p\.\s*\d+/)", memo_raw.lower()):
             return None
-        if re.fullmatch(r"[\d\.\s-]+", memo):
+        if re.fullmatch(r"[\d\.\s-]+", memo_raw):
             return None
-        if memo.lower() in ["unknown", "", "$", "-", "–"]:
+        if memo_raw.lower() in ["unknown", "", "$", "-", "–"]:
             return None
 
         return {
