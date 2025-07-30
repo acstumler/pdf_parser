@@ -5,14 +5,28 @@ from .base_parser import BaseParser
 class AmexMultilineParser(BaseParser):
     def __init__(self, path):
         self.path = path
+        self.account_source = "Unknown Source"
 
     @staticmethod
     def matches(text: str) -> bool:
-        return "AMERICAN EXPRESS" in text.upper() and "ACCOUNT ENDING" in text.upper()
+        # Detect AMEX-style structure based on repeating date + amount lines and known layout phrases
+        has_dates_and_dollars = bool(re.search(r"\d{2}/\d{2}/\d{2,4}.*\$-?\(?\d", text))
+        has_fees_section = "Total Fees for this Period" in text
+        has_interest_section = "Interest Charged" in text
+        return has_dates_and_dollars and (has_fees_section or has_interest_section)
 
     def extract_text(self):
         with pdfopen(self.path) as pdf:
-            return "\n".join(page.extract_text() for page in pdf.pages if page.extract_text())
+            text = []
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text.append(page_text)
+                    # Detect account number (last 5 digits) from header
+                    match = re.search(r"Account Ending[^\d]*(\d{5})", page_text, re.IGNORECASE)
+                    if match:
+                        self.account_source = match.group(1)
+            return "\n".join(text)
 
     def parse(self):
         text = self.extract_text()
@@ -23,7 +37,6 @@ class AmexMultilineParser(BaseParser):
 
         def is_valid_line(line):
             line = line.strip()
-            # Must start with a date and contain a dollar value
             return bool(re.match(r"^\d{2}/\d{2}/\d{2,4}", line) and "$" in line)
 
         for line in lines:
@@ -35,7 +48,6 @@ class AmexMultilineParser(BaseParser):
                     current_block = []
             current_block.append(line)
 
-        # Final block catch
         if current_block:
             tx = self._parse_block(current_block)
             if tx:
@@ -46,12 +58,7 @@ class AmexMultilineParser(BaseParser):
     def _parse_block(self, block):
         full_text = " ".join(block).strip()
 
-        # Removed "interest charge" from exclusions to capture interest transactions
-        if any(exclusion in full_text.lower() for exclusion in [
-            "apr", "fees in 2023", "minimum payment"
-        ]):
-            return None
-
+        # No keyword filters — allow all valid entries including interest
         date_match = re.search(r"(\d{2}/\d{2}/\d{2,4})", full_text)
         amount_match = re.search(r"\$?(-?\(?\d{1,4}(?:,\d{3})*(?:\.\d{2})\)?)", full_text)
 
@@ -67,7 +74,6 @@ class AmexMultilineParser(BaseParser):
         except ValueError:
             return None
 
-        # Allow long, repeated memo strings; just clean spacing
         memo_text = full_text.replace(raw_date, "").replace(raw_amount, "").strip()
         memo_text = re.sub(r"[\s]{2,}", " ", memo_text)
         memo = memo_text[:80].strip() or "Unknown"
@@ -76,5 +82,5 @@ class AmexMultilineParser(BaseParser):
             "date": raw_date,
             "memo": memo,
             "amount": amount,
-            "source": "AMEX 61005"
+            "source": self.account_source
         }
