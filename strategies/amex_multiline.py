@@ -12,7 +12,7 @@ class AmexMultilineParser(BaseParser):
         has_dates_and_amounts = bool(re.search(r"\d{2}/\d{2}/\d{2,4}.*\$-?\(?\d", text))
         has_fee_section_structure = bool(re.search(r"Total\s+Fees\s+for\s+this\s+Period", text, re.IGNORECASE))
         has_interest_section_structure = bool(re.search(r"Interest\s+Charged", text, re.IGNORECASE))
-        has_posted_dollar_asterisk = bool(re.search(r"\$\d+\.\d{2}\*", text))  # e.g. "$62.00*"
+        has_posted_dollar_asterisk = bool(re.search(r"\$\d+\.\d{2}\*", text))
 
         score = sum([
             has_dates_and_amounts,
@@ -83,7 +83,9 @@ class AmexMultilineParser(BaseParser):
         memo_text = re.sub(r"[\s]{2,}", " ", memo_text)
         memo = memo_text[:80].strip() or "Unknown"
 
-        # ✅ Filter false positives
+        if re.search(r"(new balance|min.*payment|membership rewards|account summary|customer care|gold card|p\.\s*\d+/)", memo.lower()):
+            return None
+
         if re.fullmatch(r"[\d\.\s-]+", memo):
             return None
         if memo.lower() in ["unknown", "", "$", "-", "–"]:
