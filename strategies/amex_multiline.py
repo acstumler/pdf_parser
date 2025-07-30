@@ -25,13 +25,16 @@ class AmexMultilineParser(BaseParser):
     def extract_text(self):
         with pdfopen(self.path) as pdf:
             text = []
-            for page in pdf.pages:
+            for page_number, page in enumerate(pdf.pages):
                 page_text = page.extract_text()
+                print(f"\n---- PAGE {page_number + 1} ----\n")
+                print(page_text or "[EMPTY]")
                 if page_text:
                     text.append(page_text)
                     match = re.search(r"Account Ending[^\d]*(\d{5})", page_text, re.IGNORECASE)
                     if match:
-                        self.account_source = f"AMEX {match.group(1)}"  # Updated
+                        self.account_source = f"AMEX {match.group(1)}"
+                        print(f"[DEBUG] Extracted Source: {self.account_source}")
             return "\n".join(text)
 
     def parse(self):
