@@ -77,6 +77,8 @@ class AmexMultilineParser(BaseParser):
 
         raw_date = date_match.group(1)
         raw_amount = amount_match.group(1)
+
+        # Normalize and invert amount if shown as a credit (parentheses or minus sign)
         clean_amount = raw_amount.replace("(", "-").replace(")", "").replace("$", "").replace(",", "")
 
         try:
