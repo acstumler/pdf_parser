@@ -31,7 +31,7 @@ class AmexMultilineParser(BaseParser):
                     text.append(page_text)
                     match = re.search(r"Account Ending[^\d]*(\d{5})", page_text, re.IGNORECASE)
                     if match:
-                        self.account_source = match.group(1)
+                        self.account_source = f"AMEX {match.group(1)}"  # Updated
             return "\n".join(text)
 
     def parse(self):
