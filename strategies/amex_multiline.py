@@ -23,10 +23,8 @@ class AmexMultilineParser(BaseParser):
 
         def is_valid_line(line):
             line = line.strip()
-            # Loosen rule: must start with a date and contain a dollar sign
-            if re.match(r"^\d{2}/\d{2}/\d{2,4}", line) and "$" in line:
-                return True
-            return False
+            # Must start with a date and contain a dollar value
+            return bool(re.match(r"^\d{2}/\d{2}/\d{2,4}", line) and "$" in line)
 
         for line in lines:
             if is_valid_line(line):
@@ -37,7 +35,7 @@ class AmexMultilineParser(BaseParser):
                     current_block = []
             current_block.append(line)
 
-        # Catch final transaction block
+        # Final block catch
         if current_block:
             tx = self._parse_block(current_block)
             if tx:
@@ -48,9 +46,9 @@ class AmexMultilineParser(BaseParser):
     def _parse_block(self, block):
         full_text = " ".join(block).strip()
 
-        # Reject metadata rows
+        # Removed "interest charge" from exclusions to capture interest transactions
         if any(exclusion in full_text.lower() for exclusion in [
-            "interest charge", "interest charged", "interest calculation", "apr", "fees in 2023", "minimum payment"
+            "apr", "fees in 2023", "minimum payment"
         ]):
             return None
 
@@ -62,7 +60,6 @@ class AmexMultilineParser(BaseParser):
 
         raw_date = date_match.group(1)
         raw_amount = amount_match.group(1)
-
         clean_amount = raw_amount.replace("(", "-").replace(")", "").replace("$", "").replace(",", "")
 
         try:
@@ -70,6 +67,7 @@ class AmexMultilineParser(BaseParser):
         except ValueError:
             return None
 
+        # Allow long, repeated memo strings; just clean spacing
         memo_text = full_text.replace(raw_date, "").replace(raw_amount, "").strip()
         memo_text = re.sub(r"[\s]{2,}", " ", memo_text)
         memo = memo_text[:80].strip() or "Unknown"
