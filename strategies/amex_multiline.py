@@ -78,25 +78,29 @@ class AmexMultilineParser(BaseParser):
         raw_date = date_match.group(1)
         raw_amount = amount_match.group(1)
 
-        # Normalize and invert amount if shown as a credit (parentheses or minus sign)
+        # Normalize and convert amount
         clean_amount = raw_amount.replace("(", "-").replace(")", "").replace("$", "").replace(",", "")
-
         try:
             amount = round(float(clean_amount), 2)
         except ValueError:
             return None
 
+        # Extract memo
         memo_text = full_text.replace(raw_date, "").replace(raw_amount, "").strip()
         memo_text = re.sub(r"[\s]{2,}", " ", memo_text)
         memo = memo_text[:80].strip() or "Unknown"
 
+        # Filter out non-transaction noise
         if re.search(r"(new balance|min.*payment|membership rewards|account summary|customer care|gold card|p\.\s*\d+/)", memo.lower()):
             return None
-
         if re.fullmatch(r"[\d\.\s-]+", memo):
             return None
         if memo.lower() in ["unknown", "", "$", "-", "–"]:
             return None
+
+        # === Directional correction logic ===
+        if re.search(r"(payment.*thank you|thank you.*payment|payment received)", memo.lower()):
+            amount = -abs(amount)  # Flip to negative (credit card payments)
 
         return {
             "date": raw_date,
