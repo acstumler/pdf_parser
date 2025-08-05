@@ -1,18 +1,23 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
-from typing import Optional
-from ..services.classify_logic import classify_transaction
+from services.classify_logic import classify_transaction
 
-router = APIRouter()
-
-class ClassificationRequest(BaseModel):
+class TransactionInput(BaseModel):
     memo: str
-    user_id: Optional[str] = None
+    amount: float
+    date: str
+    source: str
 
-@router.post("/classify")
-async def classify_endpoint(payload: ClassificationRequest, request: Request):
-    try:
-        result = await classify_transaction(payload.memo, payload.user_id)
-        return {"account": result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+classify_router = APIRouter()
+
+@classify_router.post("/classify-transaction/")
+async def classify_transaction_endpoint(data: TransactionInput, request: Request):
+    user_id = request.headers.get("X-User-ID", "anonymous")
+    classification = classify_transaction(
+        memo=data.memo,
+        amount=data.amount,
+        date=data.date,
+        source=data.source,
+        user_id=user_id
+    )
+    return {"account": classification}
