@@ -2,7 +2,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from strategies import STRATEGY_CLASSES
-from utils.pdf_utils import extract_text_from_pdf
+from services.pdf_utils import extract_text_from_pdf  # ← Fixed path
 from parser_engine import detect_and_parse
 from routes.classify_route import classify_router
 
