@@ -10,3 +10,4 @@ pdf2image
 PyPDF2
 pandas
 aiohttp
+firebase-admin
