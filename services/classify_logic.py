@@ -1,54 +1,47 @@
 import os
+import json
 import aiohttp
-from firebase_admin import firestore, initialize_app
+from firebase_admin import credentials, firestore, initialize_app
+from openai import OpenAI
 
-# Initialize Firestore only once
-try:
-    initialize_app()
-except ValueError:
-    pass  # Already initialized
+# Load Firebase service account credentials
+FIREBASE_CRED_PATH = os.path.join(os.path.dirname(__file__), '../firebase_key.json')
 
+cred = credentials.Certificate(FIREBASE_CRED_PATH)
+initialize_app(cred)
 db = firestore.client()
 
+# Access environment variables
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = "gpt-4o"  # You can change this to "gpt-4.1" or another model if needed
+
+openai = OpenAI(api_key=OPENAI_API_KEY)
 
 async def classify_transaction(memo, user_id=None):
-    # Step 1: Check Firestore for vendor memory
+    vendor = memo.strip().lower()
+    if not vendor:
+        return "Uncategorized"
+
+    # Try: check if user has a classification saved
     if user_id:
-        user_doc_ref = db.collection("vendor_memory").document(user_id)
-        user_doc = user_doc_ref.get()
-        if user_doc.exists:
-            memory = user_doc.to_dict()
-            for vendor, account in memory.items():
-                if vendor.lower() in memo.lower():
-                    return account  # Memory match found
+        user_ref = db.collection("vendor_memory").document(user_id).collection("vendors").document(vendor)
+        doc = user_ref.get()
+        if doc.exists:
+            return doc.to_dict().get("account", "Uncategorized")
 
-    # Step 2: Fallback to OpenAI classification
-    prompt = (
-        f"Classify the following transaction memo into a GAAP-style account. "
-        f"Return only the best-matching account name, no explanations or commentary.\n\n"
-        f"Memo: \"{memo}\""
-    )
+    # AI fallback
+    prompt = f"What chart of account category best fits this vendor name: '{memo}'?"
+    try:
+        response = await openai.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+        )
+        result = response.choices[0].message.content.strip()
+    except Exception:
+        result = "Uncategorized"
 
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    # Save classification for future reference if user_id provided
+    if user_id:
+        user_ref.set({"account": result}, merge=True)
 
-    json_payload = {
-        "model": OPENAI_MODEL,
-        "messages": [
-            {"role": "system", "content": "You are a bookkeeping assistant that classifies financial transactions."},
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.2
-    }
-
-    async with aiohttp.ClientSession() as session:
-        async with session.post("https://api.openai.com/v1/chat/completions", headers=headers, json=json_payload) as response:
-            data = await response.json()
-            try:
-                return data["choices"][0]["message"]["content"].strip()
-            except (KeyError, IndexError):
-                return "Unclassified"
+    return result
