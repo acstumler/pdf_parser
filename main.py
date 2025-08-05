@@ -16,7 +16,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 @app.post("/parse-universal/")
 async def parse_universal(file: UploadFile = File(...)):
     try:
@@ -29,5 +28,5 @@ async def parse_universal(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
+# Include AI classification route
 app.include_router(classify_router)
