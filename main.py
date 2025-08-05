@@ -1,24 +1,33 @@
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import tempfile
-from parser_engine import detect_and_parse as extract_transactions  # ✅ uses strategy-based parser
+from starlette.responses import JSONResponse
+from strategies import STRATEGY_CLASSES
+from utils.pdf_utils import extract_text_from_pdf
+from parser_engine import detect_and_parse
+from routes.classify_route import classify_router
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://lighthouse-iq.vercel.app"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
 @app.post("/parse-universal/")
 async def parse_universal(file: UploadFile = File(...)):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+    try:
         contents = await file.read()
-        tmp.write(contents)
-        tmp_path = tmp.name
+        text = extract_text_from_pdf(contents)
+        strategy_class = detect_and_parse(text)
+        parser = strategy_class(text)
+        transactions = parser.extract_transactions()
+        return JSONResponse(content={"transactions": transactions})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-    transactions = extract_transactions(tmp_path)  # ✅ returns parsed list (not coroutine)
-    return {"transactions": transactions}
+
+app.include_router(classify_router)
