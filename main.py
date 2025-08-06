@@ -2,6 +2,7 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
+import traceback
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
@@ -33,6 +34,7 @@ async def parse_universal(file: UploadFile = File(...)):
         transactions = parser.extract_transactions()
         return JSONResponse(content={"transactions": transactions})
     except Exception as e:
+        traceback.print_exc()  # Print full error to Render logs
         raise HTTPException(status_code=500, detail=str(e))
 
 # Mount classification route (AI + memory logic)
