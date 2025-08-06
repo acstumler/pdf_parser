@@ -6,14 +6,14 @@ import firebase_admin
 from firebase_admin import firestore, initialize_app, credentials
 from openai import OpenAI
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-FIREBASE_CRED_PATH = os.path.join(BASE_DIR, "firebase_key.json")
-
-# ✅ Proper Firebase app check and initialization
+# Secure Firebase credential loading from environment variable
 if not firebase_admin._apps:
-    cred = credentials.Certificate(FIREBASE_CRED_PATH)
+    firebase_key_str = os.getenv("FIREBASE_KEY_JSON")
+    firebase_key_dict = json.loads(firebase_key_str)
+    cred = credentials.Certificate(firebase_key_dict)
     firebase_admin.initialize_app(cred)
 
+# Firestore and OpenAI setup
 db = firestore.client()
 openai_client = OpenAI()
 
@@ -36,8 +36,8 @@ async def classify_transaction(vendor: str, user_id: str) -> str:
 
     # 3. Fallback to OpenAI classification
     prompt = (
-        f"Given the vendor name '{vendor}', return the best matching account category from a chart of accounts. "
-        f"Only return the account name, nothing else."
+        f"Given the vendor name '{vendor}', return the best matching account category "
+        f"from a chart of accounts. Only return the account name, nothing else."
     )
 
     try:
@@ -54,5 +54,5 @@ async def classify_transaction(vendor: str, user_id: str) -> str:
         global_ref.set({vendor: suggestion}, merge=True)
         return suggestion
 
-    except Exception as e:
+    except Exception:
         return "Unclassified"
