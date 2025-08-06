@@ -1,47 +1,56 @@
 import os
 import json
+from pathlib import Path
 import aiohttp
-from firebase_admin import credentials, firestore, initialize_app
+from firebase_admin import firestore, initialize_app, credentials
 from openai import OpenAI
 
-# Load Firebase service account credentials
-FIREBASE_CRED_PATH = os.path.join(os.path.dirname(__file__), '../firebase_key.json')
+BASE_DIR = Path(__file__).resolve().parent.parent
+FIREBASE_CRED_PATH = os.path.join(BASE_DIR, "firebase_key.json")
 
-cred = credentials.Certificate(FIREBASE_CRED_PATH)
-initialize_app(cred)
+if not firestore._apps:
+    cred = credentials.Certificate(FIREBASE_CRED_PATH)
+    initialize_app(cred)
+
 db = firestore.client()
+openai_client = OpenAI()
 
-# Access environment variables
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+async def classify_transaction(vendor: str, user_id: str) -> str:
+    # 1. Check user-trained memory
+    user_map_ref = db.collection("user_vendor_map").document(user_id)
+    user_doc = user_map_ref.get()
+    if user_doc.exists:
+        user_memory = user_doc.to_dict()
+        if vendor in user_memory:
+            return user_memory[vendor]
 
-openai = OpenAI(api_key=OPENAI_API_KEY)
+    # 2. Check global memory
+    global_ref = db.collection("global_vendor_map").document("memory")
+    global_doc = global_ref.get()
+    if global_doc.exists:
+        global_memory = global_doc.to_dict()
+        if vendor in global_memory:
+            return global_memory[vendor]
 
-async def classify_transaction(memo, user_id=None):
-    vendor = memo.strip().lower()
-    if not vendor:
-        return "Uncategorized"
+    # 3. Fallback to OpenAI classification
+    prompt = (
+        f"Given the vendor name '{vendor}', return the best matching account category from a chart of accounts. "
+        f"Only return the account name, nothing else."
+    )
 
-    # Try: check if user has a classification saved
-    if user_id:
-        user_ref = db.collection("vendor_memory").document(user_id).collection("vendors").document(vendor)
-        doc = user_ref.get()
-        if doc.exists:
-            return doc.to_dict().get("account", "Uncategorized")
-
-    # AI fallback
-    prompt = f"What chart of account category best fits this vendor name: '{memo}'?"
     try:
-        response = await openai.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
+        response = await openai_client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a helpful accounting assistant."},
+                {"role": "user", "content": prompt},
+            ],
         )
-        result = response.choices[0].message.content.strip()
-    except Exception:
-        result = "Uncategorized"
+        suggestion = response.choices[0].message.content.strip()
 
-    # Save classification for future reference if user_id provided
-    if user_id:
-        user_ref.set({"account": result}, merge=True)
+        # 4. Store suggestion in global memory
+        global_ref.set({vendor: suggestion}, merge=True)
+        return suggestion
 
-    return result
+    except Exception as e:
+        return "Unclassified"
