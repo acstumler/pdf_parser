@@ -12,3 +12,4 @@ pandas
 aiohttp
 firebase-admin
 openai
+python-dotenv
