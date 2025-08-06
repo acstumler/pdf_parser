@@ -2,15 +2,17 @@ import os
 import json
 from pathlib import Path
 import aiohttp
+import firebase_admin
 from firebase_admin import firestore, initialize_app, credentials
 from openai import OpenAI
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FIREBASE_CRED_PATH = os.path.join(BASE_DIR, "firebase_key.json")
 
-if not firestore._apps:
+# ✅ Proper Firebase app check and initialization
+if not firebase_admin._apps:
     cred = credentials.Certificate(FIREBASE_CRED_PATH)
-    initialize_app(cred)
+    firebase_admin.initialize_app(cred)
 
 db = firestore.client()
 openai_client = OpenAI()
