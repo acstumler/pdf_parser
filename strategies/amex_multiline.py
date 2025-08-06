@@ -110,3 +110,6 @@ class AmexMultilineParser(BaseParser):
             "amount": amount,
             "source": self.account_source
         }
+
+    def extract_transactions(self):
+        return self.parse()
