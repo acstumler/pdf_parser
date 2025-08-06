@@ -28,14 +28,12 @@ app.add_middleware(
 async def parse_universal(file: UploadFile = File(...)):
     try:
         contents = await file.read()
-        text = extract_text_from_pdf(contents)
-        strategy_class = detect_and_parse(text)
-        parser = strategy_class(text)
+        parser = detect_and_parse(contents)  # FIX: pass raw bytes
         transactions = parser.extract_transactions()
         return JSONResponse(content={"transactions": transactions})
     except Exception as e:
-        traceback.print_exc()  # Print full error to Render logs
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-# Mount classification route (AI + memory logic)
+# Mount classification route
 app.include_router(classify_router)

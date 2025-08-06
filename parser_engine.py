@@ -1,15 +1,16 @@
 import fitz
 from strategies import STRATEGY_CLASSES
 
-def detect_and_parse(path):
-    with fitz.open(path) as doc:
+def detect_and_parse(contents):
+    # Open PDF from raw bytes
+    with fitz.open("pdf", contents) as doc:
         raw_text = "\n".join(page.get_text() for page in doc)
 
-    print(f"[ParserEngine] Running parser detection on: {path}")
+    print("[ParserEngine] Running parser detection on in-memory PDF content")
     for strategy_class in STRATEGY_CLASSES:
         if strategy_class.matches(raw_text):
             print(f"[ParserEngine] Using {strategy_class.__name__}")
-            parser = strategy_class(path)
-            return parser.parse()
+            parser = strategy_class(raw_text)
+            return parser  # return the parser instance, not just parsed data
 
     raise Exception("No suitable parser found for this document.")
