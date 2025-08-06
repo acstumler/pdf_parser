@@ -1,11 +1,12 @@
 import re
+from io import BytesIO
 from pdfplumber import open as pdfopen
 from .base_parser import BaseParser
 from utils.clean_vendor_name import clean_vendor_name
 
 class AmexMultilineParser(BaseParser):
-    def __init__(self, path):
-        self.path = path
+    def __init__(self, pdf_bytes):
+        self.pdf_bytes = pdf_bytes
         self.account_source = "Unknown Source"
 
     @staticmethod
@@ -24,7 +25,7 @@ class AmexMultilineParser(BaseParser):
         return score >= 2
 
     def extract_text(self):
-        with pdfopen(self.path) as pdf:
+        with pdfopen(BytesIO(self.pdf_bytes)) as pdf:
             text = []
             for page_number, page in enumerate(pdf.pages):
                 page_text = page.extract_text()
