@@ -4,6 +4,7 @@ import openai
 import os
 import time
 import random
+import asyncio
 
 from chart_of_accounts import chart_of_accounts
 from vendor_map import vendor_map
@@ -82,7 +83,8 @@ Respond only with the exact account name. No quotes or explanation.
 """.strip()
 
 
-def classify_with_openai(prompt: str) -> str:
+async def classify_with_openai(prompt: str) -> str:
+    await asyncio.sleep(0.2)  # Throttle OpenAI calls to avoid 429
     retries = 3
     for attempt in range(retries):
         try:
@@ -132,7 +134,7 @@ async def classify_transaction(req: Request):
 
     # Step 3: GPT fallback
     prompt = build_prompt(memo, amount, source, source_type)
-    classification = classify_with_openai(prompt)
+    classification = await classify_with_openai(prompt)
 
     # Step 4: Cache into Firebase
     db.collection("vendor_memory").add({
