@@ -138,11 +138,17 @@ async def classify_transaction(req: Request):
     )
     results = list(query.stream())
     if results:
-        return {"classification": results[0].to_dict()["account"]}
+        mem_class = results[0].to_dict()["account"]
+        if mem_class.strip() == source.strip():
+            return {"classification": "7090 - Uncategorized Expense"}
+        return {"classification": mem_class}
 
     # Step 2: Static vendor map
     if normalized in vendor_map:
-        return {"classification": vendor_map[normalized]}
+        mapped_class = vendor_map[normalized]
+        if mapped_class.strip() == source.strip():
+            return {"classification": "7090 - Uncategorized Expense"}
+        return {"classification": mapped_class}
 
     # Step 3: GPT fallback
     prompt = build_prompt(full_memo, amount, source, source_type)
