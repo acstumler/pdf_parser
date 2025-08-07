@@ -29,24 +29,56 @@ def should_retry(exception) -> bool:
     )
 
 
-def build_prompt(memo: str, amount: float, source: str) -> str:
+def build_prompt(memo: str, amount: float, source: str, source_type: str) -> str:
     coa_text = "\n- " + "\n- ".join(chart_of_accounts)
+
+    rules = ""
+
+    if source_type == "Credit Card":
+        rules = """
+Interpret amounts based on a credit card statement:
+- Positive amounts represent charges (expenses).
+- Negative amounts represent either refunds or payments.
+
+Rules:
+- Classify positive amounts as expense accounts.
+- Classify negative amounts as refund income (if related to a return) or bank/cash accounts (if a payment).
+- Never classify into the credit card account itself. It is the source account and should not be selected.
+"""
+    elif source_type == "Bank":
+        rules = """
+Interpret amounts based on a bank statement:
+- Negative amounts represent payments, expenses, or owner draws.
+- Positive amounts represent income, refunds, or owner contributions.
+
+Rules:
+- Classify negative amounts as:
+  - Expense accounts (e.g., Meals, Office Supplies),
+  - Liability accounts (e.g., credit card payments),
+  - Owner Draws (e.g., 3010 - Owner's Draw).
+- Classify positive amounts as:
+  - Income accounts (e.g., Revenue, Refund Income),
+  - Owner Contributions (e.g., 3020 - Owner's Contribution).
+- Never classify into the bank account itself. It is the source account and should not be selected.
+"""
+
     return f"""
-You are a smart accounting assistant working for a bookkeeping system.
+You are a smart accounting assistant classifying a financial transaction for a bookkeeping system.
 
-You will be given a single financial transaction and must classify it into the most accurate account based on a professional Chart of Accounts.
+Use professional accounting logic to classify the transaction into the most accurate account from the Chart of Accounts.
 
-Do NOT guess. Only choose an account if it clearly fits the vendor or purpose in the memo.
-If the memo is too vague, respond with '7090 - Uncategorized Expense'.
+Source Type: {source_type}
+Memo: "{memo}"
+Amount: {amount}
+Source Account: {source}
 
-Here is the transaction:
-- Memo: "{memo}"
-- Amount: {amount}
-- Source: {source}
+{rules}
 
-Here is the Chart of Accounts:{coa_text}
+If the memo is unclear or cannot be reasonably interpreted, classify as '7090 - Uncategorized Expense'.
 
-Respond only with the exact account name. No quotes. No explanation.
+Chart of Accounts:{coa_text}
+
+Respond only with the exact account name. No quotes or explanation.
 """.strip()
 
 
@@ -77,6 +109,10 @@ async def classify_transaction(req: Request):
     amount = body.get("amount", 0)
     source = body.get("source", "")
     user_id = body.get("uid", None)
+    source_type = body.get("source_type", "")  # "Credit Card" or "Bank"
+
+    if not source_type:
+        return {"classification": "7090 - Uncategorized Expense"}
 
     normalized = normalize_vendor(memo)
 
@@ -95,7 +131,7 @@ async def classify_transaction(req: Request):
         return {"classification": vendor_map[normalized]}
 
     # Step 3: GPT fallback
-    prompt = build_prompt(memo, amount, source)
+    prompt = build_prompt(memo, amount, source, source_type)
     classification = classify_with_openai(prompt)
 
     # Step 4: Cache into Firebase
