@@ -72,6 +72,10 @@ You are a smart accounting assistant classifying a financial transaction for a b
 
 Use professional accounting logic to classify the transaction into the most accurate account from the Chart of Accounts.
 
+The "source account" refers to the financial account this transaction came from — such as a credit card (e.g., AMEX 61005) or a bank account (e.g., Chase 1001). It is the offset account in the journal entry and must **never** be used as the classification.
+
+Your task is to return the **other side** of the transaction — the purpose — such as Meals, Supplies, Income, or Transfers.
+
 Source Type: {source_type}
 Memo: "{memo}"
 Amount: {amount}
@@ -87,7 +91,7 @@ Respond only with the exact account name. No quotes or explanation.
 """.strip()
 
 
-async def classify_with_openai(prompt: str) -> str:
+async def classify_with_openai(prompt: str, source: str) -> str:
     await asyncio.sleep(0.2)  # Throttle OpenAI calls to avoid 429
     retries = 3
     for attempt in range(retries):
@@ -98,7 +102,10 @@ async def classify_with_openai(prompt: str) -> str:
                 temperature=0,
                 timeout=10,
             )
-            return response.choices[0].message.content.strip()
+            classification = response.choices[0].message.content.strip()
+            if classification.strip() == source.strip():
+                return "7090 - Uncategorized Expense"
+            return classification
         except Exception as e:
             if attempt < retries - 1 and should_retry(e):
                 wait_time = (2 ** attempt) + random.uniform(0, 0.5)
@@ -139,7 +146,7 @@ async def classify_transaction(req: Request):
 
     # Step 3: GPT fallback
     prompt = build_prompt(full_memo, amount, source, source_type)
-    classification = await classify_with_openai(prompt)
+    classification = await classify_with_openai(prompt, source)
 
     # Step 4: Cache into Firebase
     db.collection("vendor_memory").add({
