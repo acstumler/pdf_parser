@@ -21,6 +21,10 @@ def normalize_vendor(memo: str) -> str:
     )
 
 
+def clean_memo(memo: str) -> str:
+    return ' '.join(''.join(c for c in memo if c.isprintable()).split())
+
+
 def should_retry(exception) -> bool:
     return (
         "429" in str(exception)
@@ -107,7 +111,7 @@ async def classify_with_openai(prompt: str) -> str:
 @router.post("/classify-transaction")
 async def classify_transaction(req: Request):
     body = await req.json()
-    memo = body.get("memo", "")
+    raw_memo = body.get("memo", "")
     amount = body.get("amount", 0)
     source = body.get("source", "")
     user_id = body.get("uid", None)
@@ -116,7 +120,8 @@ async def classify_transaction(req: Request):
     if not source_type:
         return {"classification": "7090 - Uncategorized Expense"}
 
-    normalized = normalize_vendor(memo)
+    full_memo = clean_memo(raw_memo)
+    normalized = normalize_vendor(raw_memo)
 
     # Step 1: Firebase memory lookup
     query = (
@@ -133,7 +138,7 @@ async def classify_transaction(req: Request):
         return {"classification": vendor_map[normalized]}
 
     # Step 3: GPT fallback
-    prompt = build_prompt(memo, amount, source, source_type)
+    prompt = build_prompt(full_memo, amount, source, source_type)
     classification = await classify_with_openai(prompt)
 
     # Step 4: Cache into Firebase
