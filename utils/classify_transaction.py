@@ -11,6 +11,7 @@ from vendor_map import vendor_map
 router = APIRouter()
 db = firestore.client()
 openai.api_key = os.getenv("OPENAI_API_KEY")
+openai.api_base = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
 
 
 def normalize_vendor(memo: str) -> str:
@@ -26,6 +27,27 @@ def should_retry(exception) -> bool:
         or "500" in str(exception)
         or "502" in str(exception)
     )
+
+
+def build_prompt(memo: str, amount: float, source: str) -> str:
+    coa_text = "\n- " + "\n- ".join(chart_of_accounts)
+    return f"""
+You are a smart accounting assistant working for a bookkeeping system.
+
+You will be given a single financial transaction and must classify it into the most accurate account based on a professional Chart of Accounts.
+
+Do NOT guess. Only choose an account if it clearly fits the vendor or purpose in the memo.
+If the memo is too vague, respond with '7090 - Uncategorized Expense'.
+
+Here is the transaction:
+- Memo: "{memo}"
+- Amount: {amount}
+- Source: {source}
+
+Here is the Chart of Accounts:{coa_text}
+
+Respond only with the exact account name. No quotes. No explanation.
+""".strip()
 
 
 def classify_with_openai(prompt: str) -> str:
@@ -73,21 +95,7 @@ async def classify_transaction(req: Request):
         return {"classification": vendor_map[normalized]}
 
     # Step 3: GPT fallback
-    coa_text = "\n- " + "\n- ".join(chart_of_accounts)
-    prompt = f"""
-You are a smart accounting assistant.
-Given the following transaction, classify it into the most appropriate account from the Chart of Accounts.
-
-Transaction:
-- Memo: "{memo}"
-- Amount: {amount}
-- Source: {source}
-
-Chart of Accounts:{coa_text}
-
-Only reply with the exact account name. Do not explain or include quotes.
-""".strip()
-
+    prompt = build_prompt(memo, amount, source)
     classification = classify_with_openai(prompt)
 
     # Step 4: Cache into Firebase
