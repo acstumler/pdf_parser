@@ -3,16 +3,19 @@ from firebase_admin import firestore
 import openai
 import os
 
-from chart_of_accounts import chart_of_accounts  # ✅ Full COA import
+from chart_of_accounts import chart_of_accounts
+from vendor_map import vendor_map  # Static in-memory fallback
 
 router = APIRouter()
 db = firestore.client()
-
-# OpenAI API Key (set this securely in your environment)
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
+
 def normalize_vendor(memo: str) -> str:
-    return ' '.join(''.join(c for c in memo.lower() if c.isalnum() or c.isspace()).split()[:3])
+    return ' '.join(
+        ''.join(c for c in memo.lower() if c.isalnum() or c.isspace()).split()[:3]
+    )
+
 
 @router.post("/classify-transaction")
 async def classify_transaction(req: Request):
@@ -24,17 +27,21 @@ async def classify_transaction(req: Request):
 
     normalized = normalize_vendor(memo)
 
-    # ✅ Check vendor memory in Firestore
+    # Step 1: Check Firebase Memory (user-specific or global)
     query = (
         db.collection("vendor_memory")
         .where("vendor", "==", normalized)
         .where("userId", "in", [None, user_id])
     )
-    results = query.stream()
-    for doc in results:
-        return {"classification": doc.to_dict()["account"]}
+    results = list(query.stream())
+    if results:
+        return {"classification": results[0].to_dict()["account"]}
 
-    # 🧠 GPT fallback using full chart_of_accounts
+    # Step 2: Check Static Vendor Map
+    if normalized in vendor_map:
+        return {"classification": vendor_map[normalized]}
+
+    # Step 3: Fallback to OpenAI GPT
     coa_text = "\n- " + "\n- ".join(chart_of_accounts)
     prompt = f"""
 You are a smart accounting assistant.
@@ -54,9 +61,20 @@ Only reply with the exact account name. Do not explain or include quotes.
         response = openai.ChatCompletion.create(
             model="gpt-4o",
             messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            timeout=10,
         )
         classification = response.choices[0].message.content.strip()
+
+        # Step 4: Cache classification to Firebase
+        db.collection("vendor_memory").add({
+            "vendor": normalized,
+            "account": classification,
+            "userId": user_id
+        })
+
         return {"classification": classification}
+
     except Exception as e:
         print(f"OpenAI error: {e}")
         return {"classification": "7090 - Uncategorized Expense"}
