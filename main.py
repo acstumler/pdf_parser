@@ -1,3 +1,4 @@
+# main.py
 import os
 from dotenv import load_dotenv
 
@@ -10,7 +11,8 @@ from starlette.responses import JSONResponse
 
 from parser_engine import detect_and_parse
 from routes.classify_route import classify_router
-from routes.ml_route import ml_router  # ← fixed path
+from routes.ml_route import ml_router
+from routes.memory_route import memory_router
 
 app = FastAPI()
 
@@ -35,3 +37,4 @@ async def parse_universal(file: UploadFile = File(...)):
 
 app.include_router(classify_router)
 app.include_router(ml_router)
+app.include_router(memory_router)
