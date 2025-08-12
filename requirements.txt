@@ -13,3 +13,5 @@ aiohttp
 firebase-admin
 openai
 python-dotenv
+scikit-learn
+joblib

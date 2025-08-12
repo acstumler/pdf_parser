@@ -10,11 +10,9 @@ import os
 MODEL_PATH = "model.joblib"
 DATA_PATH = "ml_training_data.csv"
 
-# Training function
 def train_model():
     df = pd.read_csv(DATA_PATH)
-    df = df.dropna(subset=["memo", "account"])  # clean
-
+    df = df.dropna(subset=["memo", "account"])
     X = df["memo"]
     y = df["account"]
 
@@ -26,14 +24,12 @@ def train_model():
     ])
 
     pipeline.fit(X_train, y_train)
-
     y_pred = pipeline.predict(X_test)
     print(classification_report(y_test, y_pred))
 
     joblib.dump(pipeline, MODEL_PATH)
     print(f"[ML] Model saved to {MODEL_PATH}")
 
-# Prediction function
 def load_model():
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError("Model file not found. Run train_model() first.")
@@ -41,8 +37,7 @@ def load_model():
 
 def classify_memo(memo):
     model = load_model()
-    prediction = model.predict([memo])[0]
-    return prediction
+    return model.predict([memo])[0]
 
 if __name__ == "__main__":
     train_model()
