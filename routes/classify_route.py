@@ -7,13 +7,12 @@ class TransactionInput(BaseModel):
     amount: float
     date: str
     source: str
-    source_type: str | None = None  # "Credit Card" or "Bank" (optional, but recommended)
+    source_type: str | None = None
 
 classify_router = APIRouter()
 
 @classify_router.post("/classify-transaction/")
 async def classify_transaction_endpoint(data: TransactionInput, request: Request):
-    # Temporary user identification; will be replaced by Firebase ID token verification
     user_id = request.headers.get("X-User-ID", "anonymous")
     account = await classify_transaction(
         memo=data.memo,
