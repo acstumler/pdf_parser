@@ -1,11 +1,9 @@
-# main.py
 import os
 import traceback
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
-
 from parser_engine import detect_and_parse
 from routes.classify_route import classify_router
 from routes.ml_route import ml_router
