@@ -7,10 +7,8 @@ ml_router = APIRouter()
 async def ml_classify(req: Request):
     body = await req.json()
     memo = body.get("memo", "")
-
     if not memo:
         return {"error": "Memo is required."}
-
     try:
         classification = classify_memo(memo)
         return {"classification": classification}
