@@ -10,7 +10,7 @@ from starlette.responses import JSONResponse
 
 from parser_engine import detect_and_parse
 from routes.classify_route import classify_router
-from ml_route import ml_router
+from routes.ml_route import ml_router  # ← fixed path
 
 app = FastAPI()
 
