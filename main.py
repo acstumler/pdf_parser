@@ -1,10 +1,7 @@
 # main.py
 import os
-from dotenv import load_dotenv
-
-load_dotenv()
-
 import traceback
+from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
@@ -13,6 +10,8 @@ from parser_engine import detect_and_parse
 from routes.classify_route import classify_router
 from routes.ml_route import ml_router
 from routes.memory_route import memory_router
+
+load_dotenv()
 
 app = FastAPI()
 
@@ -23,6 +22,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 @app.post("/parse-universal/")
 async def parse_universal(file: UploadFile = File(...)):
