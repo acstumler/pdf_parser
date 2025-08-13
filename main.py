@@ -60,7 +60,6 @@ async def parse_universal(file: UploadFile = File(...)):
         with pdfplumber.open(io.BytesIO(contents)) as pdf:
             raw_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
 
-        # Return preview only — actual parser logic goes here
         return {
             "ok": True,
             "filename": file.filename,
@@ -77,28 +76,3 @@ def remember_vendor(req: RememberVendorIn, x_user_id: Optional[str] = Header(def
         raise HTTPException(status_code=400, detail="memo and account required")
     MEMORY[vendor] = req.account
     return Ok()
-
-# ---------- Classify Transactions ----------
-@app.post("/classify-transaction", response_model=ClassifyOut)
-@app.post("/classify-transaction/", response_model=ClassifyOut)
-def classify_transaction(req: ClassifyRequest, x_user_id: Optional[str] = Header(default="anonymous")):
-    vendor = clean_vendor(req.memo)
-    remembered = MEMORY.get(vendor)
-    if remembered:
-        return ClassifyOut(account=remembered)
-
-    m = vendor
-    if "kroger" in m:
-        return ClassifyOut(account="5400 - Groceries")
-    if "starbucks" in m or "mcdonald" in m or "restaurant" in m or "pizza" in m:
-        return ClassifyOut(account="5330 - Meals & Entertainment")
-    if "uber" in m or "nyct" in m or "amtrak" in m:
-        return ClassifyOut(account="5700 - Travel")
-    if "autozone" in m or "fuel" in m or "circle k" in m:
-        return ClassifyOut(account="5200 - Auto & Transport")
-    if "venmo" in m or "paypal" in m:
-        return ClassifyOut(account="6998 - Miscellaneous")
-    if "apple" in m or "software" in m:
-        return ClassifyOut(account="6100 - Software & Subscriptions")
-
-    return ClassifyOut(account="6999 - Uncategorized Expense")
