@@ -6,20 +6,16 @@ from universal_parser import extract_transactions_from_bytes
 
 app = FastAPI(title="LumiLedger Parser API")
 
-# CORS: allow browser requests from anywhere (quick unblock)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=r"https://.*vercel\.app$",
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_credentials=False,
-    max_age=3600,
 )
 
-# Avoid 307 redirects between trailing-slash variants
 app.router.redirect_slashes = False
 
-# Preflight handlers so OPTIONS returns with CORS headers
 @app.options("/parse-universal")
 @app.options("/parse-universal/")
 def _preflight_ok():
