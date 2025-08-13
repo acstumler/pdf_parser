@@ -1,8 +1,10 @@
-# main.py
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, Dict
+import pdfplumber
+import io
 import re
 
 app = FastAPI(title="Lighthouse PDF Parser")
@@ -18,50 +20,56 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
-    allow_methods=["*"],          # includes OPTIONS for preflight
-    allow_headers=["*"],          # e.g., Content-Type, Authorization
-    max_age=86400,                # cache preflight for a day
+    allow_methods=["*"],
+    allow_headers=["*"],
+    max_age=86400,
 )
 
 # ---------- Models ----------
-class ParseRequest(BaseModel):
-    file_b64: str
-    source_hint: Optional[str] = None
-
 class ClassifyRequest(BaseModel):
     memo: str
     amount: float
     date: Optional[str] = None
     source: Optional[str] = None
-    source_type: Optional[str] = None  # "Credit Card", "Bank", etc.
+    source_type: Optional[str] = None
 
 class ClassifyOut(BaseModel):
-    account: str  # <- "5400 - Groceries"
+    account: str
 
 class RememberVendorIn(BaseModel):
     memo: str
-    account: str  # same "#### - Name" label you show in the UI
+    account: str
 
 class Ok(BaseModel):
     ok: bool = True
 
 # ---------- Simple in-memory vendor memory ----------
-# key: cleaned vendor string -> account label
 MEMORY: Dict[str, str] = {}
 
 def clean_vendor(s: str) -> str:
     s = (s or "").lower()
-    # strip numbers and punctuation, compress spaces
     s = re.sub(r"[^a-z\s]", " ", s)
     s = re.sub(r"\s{2,}", " ", s).strip()
     return s
 
-# ---------- Endpoints ----------
+# ---------- File Upload Parsing ----------
 @app.post("/parse-universal/")
-def parse_universal(req: ParseRequest):
-    # stub — keep your real parsing here
-    return {"ok": True, "source": "AMEX 61005"}
+async def parse_universal(file: UploadFile = File(...)):
+    try:
+        contents = await file.read()
+        with pdfplumber.open(io.BytesIO(contents)) as pdf:
+            raw_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
 
+        # Return preview only — actual parser logic goes here
+        return {
+            "ok": True,
+            "filename": file.filename,
+            "content_preview": raw_text[:1000]
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+# ---------- Vendor Memory ----------
 @app.post("/remember-vendor", response_model=Ok)
 def remember_vendor(req: RememberVendorIn, x_user_id: Optional[str] = Header(default="anonymous")):
     vendor = clean_vendor(req.memo)
@@ -70,24 +78,15 @@ def remember_vendor(req: RememberVendorIn, x_user_id: Optional[str] = Header(def
     MEMORY[vendor] = req.account
     return Ok()
 
+# ---------- Classify Transactions ----------
 @app.post("/classify-transaction", response_model=ClassifyOut)
 @app.post("/classify-transaction/", response_model=ClassifyOut)
 def classify_transaction(req: ClassifyRequest, x_user_id: Optional[str] = Header(default="anonymous")):
-    """
-    Return a single label exactly like your dropdown expects: '#### - Name'.
-    Order of logic:
-      1) If we've seen this vendor before, reuse.
-      2) Very lightweight rules (stub — replace with your model later).
-      3) Default to Uncategorized.
-    """
     vendor = clean_vendor(req.memo)
-
-    # 1) Memory first
     remembered = MEMORY.get(vendor)
     if remembered:
         return ClassifyOut(account=remembered)
 
-    # 2) toy rules — replace with your classifier
     m = vendor
     if "kroger" in m:
         return ClassifyOut(account="5400 - Groceries")
@@ -102,5 +101,4 @@ def classify_transaction(req: ClassifyRequest, x_user_id: Optional[str] = Header
     if "apple" in m or "software" in m:
         return ClassifyOut(account="6100 - Software & Subscriptions")
 
-    # 3) fallback
     return ClassifyOut(account="6999 - Uncategorized Expense")
