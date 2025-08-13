@@ -1,78 +1,60 @@
-from fastapi import FastAPI, HTTPException, Header, File, UploadFile
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-from typing import Optional, Dict
-import pdfplumber
-import io
-import re
+from typing import List, Dict, Any
+import uvicorn
 
-app = FastAPI(title="Lighthouse PDF Parser")
+from classify_route import router as classify_router
+from ml_route import router as ml_router
+from memory_route import router as memory_router
+from universal_parser import extract_transactions_from_bytes
 
-# Allow your production site and local dev
-ALLOWED_ORIGINS = [
-    "https://lighthouse-iq.vercel.app",
-    "http://localhost:5173",
-    "http://localhost:3000",
-]
+app = FastAPI(title="LumiLedger Parser API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=False,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
-    max_age=86400,
+    allow_credentials=True,
 )
 
-# ---------- Models ----------
-class ClassifyRequest(BaseModel):
-    memo: str
-    amount: float
-    date: Optional[str] = None
-    source: Optional[str] = None
-    source_type: Optional[str] = None
+app.include_router(classify_router, prefix="")
+app.include_router(ml_router, prefix="")
+app.include_router(memory_router, prefix="")
 
-class ClassifyOut(BaseModel):
-    account: str
-
-class RememberVendorIn(BaseModel):
-    memo: str
-    account: str
-
-class Ok(BaseModel):
-    ok: bool = True
-
-# ---------- Simple in-memory vendor memory ----------
-MEMORY: Dict[str, str] = {}
-
-def clean_vendor(s: str) -> str:
-    s = (s or "").lower()
-    s = re.sub(r"[^a-z\s]", " ", s)
-    s = re.sub(r"\s{2,}", " ", s).strip()
-    return s
-
-# ---------- File Upload Parsing ----------
-@app.post("/parse-universal/")
-async def parse_universal(file: UploadFile = File(...)):
+@app.post("/parse-universal-v2/")
+async def parse_universal_v2(file: UploadFile = File(...)) -> JSONResponse:
     try:
-        contents = await file.read()
-        with pdfplumber.open(io.BytesIO(contents)) as pdf:
-            raw_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-
-        return {
-            "ok": True,
-            "filename": file.filename,
-            "content_preview": raw_text[:1000]
+        content = await file.read()
+        txns, meta = extract_transactions_from_bytes(content)
+        transactions = txns if isinstance(txns, list) else []
+        payload = {
+            "transactions": [
+                {
+                    "date": str(t.get("date", "")),
+                    "memo_raw": str(t.get("memo_raw", "")),
+                    "memo_clean": str(t.get("memo_clean", "")),
+                    "amount": float(t.get("amount", 0.0)) if str(t.get("amount", "")).strip() != "" else 0.0,
+                    "source_account": str(t.get("source_account", meta.get("source_account", ""))),
+                }
+                for t in transactions
+            ],
+            "source_account": str(meta.get("source_account", "")),
+            "statement_end_date": str(meta.get("statement_end_date", "")),
+            "errors": [],
         }
+        return JSONResponse(payload)
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(
+            {
+                "transactions": [],
+                "source_account": "",
+                "statement_end_date": "",
+                "errors": [str(e)],
+            },
+            status_code=200,
+        )
 
-# ---------- Vendor Memory ----------
-@app.post("/remember-vendor", response_model=Ok)
-def remember_vendor(req: RememberVendorIn, x_user_id: Optional[str] = Header(default="anonymous")):
-    vendor = clean_vendor(req.memo)
-    if not vendor or not req.account:
-        raise HTTPException(status_code=400, detail="memo and account required")
-    MEMORY[vendor] = req.account
-    return Ok()
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8000)
