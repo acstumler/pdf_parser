@@ -9,3 +9,5 @@ PyMuPDF>=1.23.7
 pdf2image
 PyPDF2
 pandas
+firebase-admin
+google-cloud-firestore
