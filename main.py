@@ -50,11 +50,13 @@ def _parse_date_key(s: str) -> str:
 def health():
     return {"ok": True}
 
+# Preflight handlers
 @app.options("/parse-universal")
 @app.options("/parse-universal/")
 @app.options("/parse-and-persist")
 @app.options("/replace-upload")
 @app.options("/delete-upload")
+@app.options("/whoami")
 def _preflight_ok():
     return Response(status_code=204)
 
@@ -142,6 +144,12 @@ def _write_upload_and_transactions(db: firestore.Client, uid: str, upload_id: st
             doc_ref = tx_ref.document()
             batch.set(doc_ref, {**t, "uploadId": upload_id, "createdAt": firestore.SERVER_TIMESTAMP})
         batch.commit()
+
+# --- New: Who am I (auth sanity check) ---
+@app.get("/whoami")
+def whoami(authorization: str = Header(None)):
+    uid = _verify_bearer(authorization)
+    return {"uid": uid}
 
 @app.post("/parse-and-persist")
 async def parse_and_persist(authorization: str = Header(None), file: UploadFile = File(...)):
