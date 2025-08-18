@@ -1,40 +1,41 @@
-from typing import List, Dict, Any
-from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Body
+from typing import Iterable
+from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from universal_parser import extract_transactions_from_bytes
-from google.cloud import firestore
-import firebase_admin
-from firebase_admin import auth as fb_auth
 from datetime import datetime
 import os
 
-# Import classifier from utils; keep a fallback path just in case repo layout differs locally
-try:
-    from utils.classify_transaction import classify_llm
-except ImportError:
-    from classify_transaction import classify_llm  # fallback
+# Your parser — keep as is in your repo
+from universal_parser import extract_transactions_from_bytes
 
-app = FastAPI(title="LumiLedger Parser API")
+# Firebase / Firestore
+import firebase_admin
+from firebase_admin import auth as fb_auth
+from google.cloud import firestore
+
+# -------------------------- App & CORS -------------------------- #
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https://.*vercel\.app$",
     allow_origins=[
+        os.environ.get("ALLOWED_ORIGIN", "*"),
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "https://lighthouse-iq.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ---------------------- Firebase utilities --------------------- #
 def _init_firebase_once():
     try:
         firebase_admin.get_app()
     except ValueError:
         firebase_admin.initialize_app()
 
-def _firestore_client():
+def _db():
     return firestore.Client()
 
 def _verify_bearer(authorization: str | None) -> str:
@@ -42,145 +43,198 @@ def _verify_bearer(authorization: str | None) -> str:
         raise HTTPException(status_code=401, detail="Missing token")
     token = authorization.split(" ", 1)[1].strip()
     _init_firebase_once()
-    decoded = fb_auth.verify_id_token(token, check_revoked=False)
-    uid = decoded.get("uid", "")
+    try:
+        decoded = fb_auth.verify_id_token(token, check_revoked=False)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    uid = decoded.get("uid")
     if not uid:
         raise HTTPException(status_code=401, detail="Invalid token")
     return uid
 
+# ---------------------- Small helpers -------------------------- #
 def _parse_date_key(s: str) -> str:
     if not s:
         return ""
-    try:
-        dt = datetime.strptime(s, "%m/%d/%Y")
-        return dt.strftime("%Y%m%d")
-    except Exception:
+    for fmt in ("%m/%d/%Y", "%Y-%m-%d"):
         try:
-            dt = datetime.fromisoformat(s)
+            dt = datetime.strptime(s, fmt)
             return dt.strftime("%Y%m%d")
         except Exception:
-            return ""
+            pass
+    return ""
 
-def _collapse_spaces(s: str) -> str:
-    if not s:
-        return ""
-    out = []
-    prev_space = False
-    for ch in s:
-        space = ch in (" ", "\t", "\n", "\r")
-        if space:
-            if not prev_space:
-                out.append(" ")
-            prev_space = True
-        else:
-            out.append(ch)
-            prev_space = False
-    return "".join(out).strip()
+def _delete_query(q: firestore.Query, chunk: int = 450):
+    docs = list(q.stream())
+    while docs:
+        batch = q._client.batch()
+        for d in docs[:chunk]:
+            batch.delete(d.reference)
+        batch.commit()
+        docs = docs[chunk:]
 
-def _canonicalize_vendor(memo: str) -> str:
-    s = _collapse_spaces((memo or "").lower())
-    out = []
-    for ch in s:
-        if ("a" <= ch <= "z") or ch == " ":
-            out.append(ch)
-    key = "".join(out).strip()
-    return key[:64]
-
+# -------------------------- Health ----------------------------- #
 @app.get("/health")
 def health():
     return {"ok": True}
 
+# ------------------ Parse & Persist (create) ------------------- #
 @app.post("/parse-and-persist")
 async def parse_and_persist(authorization: str = Header(None), file: UploadFile = File(...)):
+    """
+    Parse a PDF, write transactions with an uploadId, and write an upload
+    metadata row that the Link+Load page reads (fileName/source/transactionCount).
+    """
     uid = _verify_bearer(authorization)
     pdf_bytes = await file.read()
-    rows, meta = extract_transactions_from_bytes(pdf_bytes)
-    db = _firestore_client()
-    batch = db.batch()
+
+    # Parse
+    rows, meta = extract_transactions_from_bytes(pdf_bytes)  # returns (list[dict], dict)
+    source = str(meta.get("source_account") or meta.get("source") or "Unknown")
+
+    db = _db()
     uref = db.collection("users").document(uid)
+
+    # Create the upload document (so we have its ID up front)
     upref = uref.collection("uploads").document()
-    batch.set(upref, {"filename": file.filename, "createdAt": firestore.SERVER_TIMESTAMP})
-    tref = uref.collection("transactions")
-    for r in rows:
+    upload_id = upref.id
+
+    batch = db.batch()
+
+    # Upload metadata
+    batch.set(upref, {
+        "fileName": file.filename,
+        "source": source,
+        "transactionCount": int(len(rows or [])),
+        "status": "ready",
+        "createdAt": firestore.SERVER_TIMESTAMP,
+        "updatedAt": firestore.SERVER_TIMESTAMP,
+    })
+
+    # Transactions with uploadId
+    tcol = uref.collection("transactions")
+    for r in rows or []:
         memo = str(r.get("memo") or r.get("memo_raw") or r.get("memo_clean") or "")
         date = str(r.get("date") or "")
-        amount = float(r.get("amount") or 0)
-        source = str(meta.get("source_account") or r.get("source") or "")
-        dateKey = _parse_date_key(date)
-        doc = tref.document()
-        batch.set(doc, {
+        amount = float(r.get("amount") or 0.0)
+        acct = str(r.get("account") or "")
+        src = str(r.get("source") or source)
+
+        batch.set(tcol.document(), {
             "date": date,
-            "dateKey": dateKey,
+            "dateKey": _parse_date_key(date),
             "memo": memo,
             "amount": amount,
-            "source": source,
-            "account": r.get("account") or ""
+            "account": acct,
+            "source": src,
+            "uploadId": upload_id,
+            "fileName": file.filename,
+            "createdAt": firestore.SERVER_TIMESTAMP,
         })
+
     batch.commit()
-    return {"ok": True, "count": len(rows)}
 
-@app.get("/transactions")
-def list_transactions(authorization: str = Header(None)):
-    uid = _verify_bearer(authorization)
-    db = _firestore_client()
-    col = db.collection("users").document(uid).collection("transactions")
-    try:
-        docs = list(col.order_by("dateKey").stream())
-    except Exception:
-        docs = list(col.stream())
-    rows = []
-    for doc in docs:
-        d = doc.to_dict() or {}
-        d["id"] = doc.id
-        rows.append(d)
-    rows.sort(key=lambda x: (x.get("dateKey") or x.get("date") or ""))
-    return {"transactions": rows}
+    return {
+        "ok": True,
+        "uploadId": upload_id,
+        "fileName": file.filename,
+        "source": source,
+        "transactionCount": len(rows or []),
+    }
 
-@app.get("/uploads")
-def list_uploads(authorization: str = Header(None)):
+# ------------------------ Replace upload ----------------------- #
+@app.post("/replace-upload")
+async def replace_upload(
+    authorization: str = Header(None),
+    uploadId: str = Query(..., min_length=1),
+    file: UploadFile = File(...),
+):
     uid = _verify_bearer(authorization)
-    db = _firestore_client()
-    q = db.collection("users").document(uid).collection("uploads").order_by(
-        "createdAt", direction=firestore.Query.DESCENDING
+    pdf_bytes = await file.read()
+
+    rows, meta = extract_transactions_from_bytes(pdf_bytes)
+    source = str(meta.get("source_account") or meta.get("source") or "Unknown")
+
+    db = _db()
+    uref = db.collection("users").document(uid)
+    upref = uref.collection("uploads").document(uploadId)
+
+    # Ensure the upload exists
+    if not upref.get().exists:
+        raise HTTPException(status_code=404, detail="Upload not found")
+
+    # Delete existing transactions for this uploadId
+    _delete_query(
+        uref.collection("transactions").where("uploadId", "==", uploadId)
     )
-    rows = []
-    for doc in q.stream():
-        d = doc.to_dict() or {}
-        d["id"] = doc.id
-        rows.append(d)
-    return {"uploads": rows}
 
-@app.post("/classify-batch")
-def classify_batch(authorization: str = Header(None), payload: Dict[str, Any] = Body(...)):
-    uid = _verify_bearer(authorization)
-    items: List[Dict[str, Any]] = payload.get("items") or []
-    allowed_accounts = payload.get("allowedAccounts") or None
-    db = _firestore_client()
-    out = []
-    for it in items:
-        _id = str(it.get("id", ""))
-        memo = str(it.get("memo", ""))
-        amount = float(it.get("amount", 0) or 0)
-        source = str(it.get("source", ""))
-        vendor_key = _canonicalize_vendor(memo)
-        mem_ref = db.collection("users").document(uid).collection("vendorMemory").document(vendor_key)
-        mem_snap = mem_ref.get()
-        if mem_snap.exists:
-            acc = (mem_snap.to_dict() or {}).get("account", "")
-            out.append({"id": _id, "account": acc or "", "via": "memory"})
-            continue
-        account = classify_llm(memo=memo, amount=amount, source=source, allowed_accounts=allowed_accounts)
-        out.append({"id": _id, "account": account or "", "via": "ai"})
-    return {"items": out}
+    # Write new transactions for same uploadId
+    batch = db.batch()
+    tcol = uref.collection("transactions")
+    for r in rows or []:
+        memo = str(r.get("memo") or r.get("memo_raw") or r.get("memo_clean") or "")
+        date = str(r.get("date") or "")
+        amount = float(r.get("amount") or 0.0)
+        acct = str(r.get("account") or "")
+        src = str(r.get("source") or source)
 
-@app.post("/train-vendor")
-def train_vendor(authorization: str = Header(None), payload: Dict[str, Any] = Body(...)):
+        batch.set(tcol.document(), {
+            "date": date,
+            "dateKey": _parse_date_key(date),
+            "memo": memo,
+            "amount": amount,
+            "account": acct,
+            "source": src,
+            "uploadId": uploadId,
+            "fileName": file.filename,
+            "createdAt": firestore.SERVER_TIMESTAMP,
+        })
+
+    # Update upload metadata
+    batch.update(upref, {
+        "fileName": file.filename,
+        "source": source,
+        "transactionCount": int(len(rows or [])),
+        "status": "ready",
+        "updatedAt": firestore.SERVER_TIMESTAMP,
+    })
+
+    batch.commit()
+
+    return {
+        "ok": True,
+        "uploadId": uploadId,
+        "fileName": file.filename,
+        "source": source,
+        "transactionCount": len(rows or []),
+    }
+
+# ------------------------- Delete upload ----------------------- #
+@app.post("/delete-upload")
+async def delete_upload(authorization: str = Header(None), uploadId: str = Query(..., min_length=1)):
     uid = _verify_bearer(authorization)
-    vendor_key = _canonicalize_vendor(str(payload.get("vendorKey", "")))
-    account = str(payload.get("account", "")).strip()
-    if not vendor_key or not account:
-        raise HTTPException(status_code=400, detail="vendorKey and account required")
-    db = _firestore_client()
-    ref = db.collection("users").document(uid).collection("vendorMemory").document(vendor_key)
-    ref.set({"account": account, "updatedAt": firestore.SERVER_TIMESTAMP, "learnedFrom": "manual"}, merge=True)
+    db = _db()
+    uref = db.collection("users").document(uid)
+
+    # Delete all tx for this upload
+    _delete_query(uref.collection("transactions").where("uploadId", "==", uploadId))
+
+    # Delete the upload doc
+    uref.collection("uploads").document(uploadId).delete()
+
+    return {"ok": True, "deletedUploadId": uploadId}
+
+# ---------------------- Delete all uploads --------------------- #
+@app.post("/delete-all-uploads")
+async def delete_all_uploads(authorization: str = Header(None)):
+    uid = _verify_bearer(authorization)
+    db = _db()
+    uref = db.collection("users").document(uid)
+
+    # Delete all transactions that have an uploadId
+    _delete_query(uref.collection("transactions").where("uploadId", ">=", ""))
+
+    # Delete all upload docs
+    _delete_query(uref.collection("uploads").where("fileName", ">=", ""))
+
     return {"ok": True}
