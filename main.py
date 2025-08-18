@@ -4,10 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 import os
 
-# Your parser — keep as is in your repo
 from universal_parser import extract_transactions_from_bytes
 
-# Firebase / Firestore
 import firebase_admin
 from firebase_admin import auth as fb_auth
 from google.cloud import firestore
@@ -81,27 +79,19 @@ def health():
 # ------------------ Parse & Persist (create) ------------------- #
 @app.post("/parse-and-persist")
 async def parse_and_persist(authorization: str = Header(None), file: UploadFile = File(...)):
-    """
-    Parse a PDF, write transactions with an uploadId, and write an upload
-    metadata row that the Link+Load page reads (fileName/source/transactionCount).
-    """
     uid = _verify_bearer(authorization)
     pdf_bytes = await file.read()
 
-    # Parse
-    rows, meta = extract_transactions_from_bytes(pdf_bytes)  # returns (list[dict], dict)
+    rows, meta = extract_transactions_from_bytes(pdf_bytes)
     source = str(meta.get("source_account") or meta.get("source") or "Unknown")
 
     db = _db()
     uref = db.collection("users").document(uid)
 
-    # Create the upload document (so we have its ID up front)
-    upref = uref.collection("uploads").document()
+    upref = uref.collection("uploads").document()   # create first to get id
     upload_id = upref.id
 
     batch = db.batch()
-
-    # Upload metadata
     batch.set(upref, {
         "fileName": file.filename,
         "source": source,
@@ -111,7 +101,6 @@ async def parse_and_persist(authorization: str = Header(None), file: UploadFile 
         "updatedAt": firestore.SERVER_TIMESTAMP,
     })
 
-    # Transactions with uploadId
     tcol = uref.collection("transactions")
     for r in rows or []:
         memo = str(r.get("memo") or r.get("memo_raw") or r.get("memo_clean") or "")
@@ -159,16 +148,11 @@ async def replace_upload(
     uref = db.collection("users").document(uid)
     upref = uref.collection("uploads").document(uploadId)
 
-    # Ensure the upload exists
     if not upref.get().exists:
         raise HTTPException(status_code=404, detail="Upload not found")
 
-    # Delete existing transactions for this uploadId
-    _delete_query(
-        uref.collection("transactions").where("uploadId", "==", uploadId)
-    )
+    _delete_query(uref.collection("transactions").where("uploadId", "==", uploadId))
 
-    # Write new transactions for same uploadId
     batch = db.batch()
     tcol = uref.collection("transactions")
     for r in rows or []:
@@ -190,7 +174,6 @@ async def replace_upload(
             "createdAt": firestore.SERVER_TIMESTAMP,
         })
 
-    # Update upload metadata
     batch.update(upref, {
         "fileName": file.filename,
         "source": source,
@@ -216,10 +199,7 @@ async def delete_upload(authorization: str = Header(None), uploadId: str = Query
     db = _db()
     uref = db.collection("users").document(uid)
 
-    # Delete all tx for this upload
     _delete_query(uref.collection("transactions").where("uploadId", "==", uploadId))
-
-    # Delete the upload doc
     uref.collection("uploads").document(uploadId).delete()
 
     return {"ok": True, "deletedUploadId": uploadId}
@@ -231,10 +211,42 @@ async def delete_all_uploads(authorization: str = Header(None)):
     db = _db()
     uref = db.collection("users").document(uid)
 
-    # Delete all transactions that have an uploadId
     _delete_query(uref.collection("transactions").where("uploadId", ">=", ""))
-
-    # Delete all upload docs
     _delete_query(uref.collection("uploads").where("fileName", ">=", ""))
 
     return {"ok": True}
+
+# --------------------------- READ APIs ------------------------- #
+@app.get("/transactions")
+def list_transactions(
+    authorization: str = Header(None),
+    limit: int = Query(1000, ge=1, le=5000),
+):
+    """Return user's transactions ordered by createdAt desc."""
+    uid = _verify_bearer(authorization)
+    db = _db()
+    uref = db.collection("users").document(uid)
+    q = uref.collection("transactions").order_by("createdAt", direction=firestore.Query.DESCENDING).limit(limit)
+    out = []
+    for d in q.stream():
+        doc = d.to_dict() or {}
+        doc["id"] = d.id
+        out.append(doc)
+    return {"ok": True, "transactions": out}
+
+@app.get("/uploads")
+def list_uploads(
+    authorization: str = Header(None),
+    limit: int = Query(500, ge=1, le=2000),
+):
+    """Return user's uploads (upload log) ordered by createdAt desc."""
+    uid = _verify_bearer(authorization)
+    db = _db()
+    uref = db.collection("users").document(uid)
+    q = uref.collection("uploads").order_by("createdAt", direction=firestore.Query.DESCENDING).limit(limit)
+    out = []
+    for d in q.stream():
+        doc = d.to_dict() or {}
+        doc["id"] = d.id
+        out.append(doc)
+    return {"ok": True, "uploads": out}
