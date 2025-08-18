@@ -7,7 +7,12 @@ import firebase_admin
 from firebase_admin import auth as fb_auth
 from datetime import datetime
 import os
-from classify_transaction import classify_llm
+
+# Import classifier from utils; keep a fallback path just in case repo layout differs locally
+try:
+    from utils.classify_transaction import classify_llm
+except ImportError:
+    from classify_transaction import classify_llm  # fallback
 
 app = FastAPI(title="LumiLedger Parser API")
 
