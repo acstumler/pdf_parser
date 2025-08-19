@@ -1,7 +1,7 @@
 from typing import Iterable
 from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 
 from universal_parser import extract_transactions_from_bytes
@@ -10,7 +10,6 @@ import firebase_admin
 from firebase_admin import auth as fb_auth
 from google.cloud import firestore
 
-# -------------------------- App & CORS -------------------------- #
 app = FastAPI()
 
 app.add_middleware(
@@ -26,7 +25,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------------- Firebase utilities --------------------- #
 def _init_firebase_once():
     try:
         firebase_admin.get_app()
@@ -36,7 +34,7 @@ def _init_firebase_once():
 def _db():
     return firestore.Client()
 
-def _verify_bearer(authorization: str | None) -> str:
+def _verify_and_decode(authorization: str | None) -> dict:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Missing token")
     token = authorization.split(" ", 1)[1].strip()
@@ -45,12 +43,19 @@ def _verify_bearer(authorization: str | None) -> str:
         decoded = fb_auth.verify_id_token(token, check_revoked=False)
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid token")
-    uid = decoded.get("uid")
-    if not uid:
+    if not decoded.get("uid"):
         raise HTTPException(status_code=401, detail="Invalid token")
-    return uid
+    return decoded
 
-# ---------------------- Small helpers -------------------------- #
+def _require_recent_login(decoded: dict, max_age_sec: int = 180):
+    # Enforce that the user's auth_time is recent (user just reauthenticated)
+    auth_time = decoded.get("auth_time")
+    if not isinstance(auth_time, (int, float)):
+        raise HTTPException(status_code=401, detail="Recent login required")
+    now = int(datetime.now(timezone.utc).timestamp())
+    if now - int(auth_time) > max_age_sec:
+        raise HTTPException(status_code=401, detail="Recent login required")
+
 def _parse_date_key(s: str) -> str:
     if not s:
         return ""
@@ -71,15 +76,14 @@ def _delete_query(q: firestore.Query, chunk: int = 450):
         batch.commit()
         docs = docs[chunk:]
 
-# -------------------------- Health ----------------------------- #
 @app.get("/health")
 def health():
     return {"ok": True}
 
-# ------------------ Parse & Persist (create) ------------------- #
 @app.post("/parse-and-persist")
 async def parse_and_persist(authorization: str = Header(None), file: UploadFile = File(...)):
-    uid = _verify_bearer(authorization)
+    decoded = _verify_and_decode(authorization)
+    uid = decoded["uid"]
     pdf_bytes = await file.read()
 
     rows, meta = extract_transactions_from_bytes(pdf_bytes)
@@ -87,8 +91,7 @@ async def parse_and_persist(authorization: str = Header(None), file: UploadFile 
 
     db = _db()
     uref = db.collection("users").document(uid)
-
-    upref = uref.collection("uploads").document()   # create first to get id
+    upref = uref.collection("uploads").document()   # get generated id
     upload_id = upref.id
 
     batch = db.batch()
@@ -131,14 +134,14 @@ async def parse_and_persist(authorization: str = Header(None), file: UploadFile 
         "transactionCount": len(rows or []),
     }
 
-# ------------------------ Replace upload ----------------------- #
 @app.post("/replace-upload")
 async def replace_upload(
     authorization: str = Header(None),
     uploadId: str = Query(..., min_length=1),
     file: UploadFile = File(...),
 ):
-    uid = _verify_bearer(authorization)
+    decoded = _verify_and_decode(authorization)
+    uid = decoded["uid"]
     pdf_bytes = await file.read()
 
     rows, meta = extract_transactions_from_bytes(pdf_bytes)
@@ -192,10 +195,10 @@ async def replace_upload(
         "transactionCount": len(rows or []),
     }
 
-# ------------------------- Delete upload ----------------------- #
 @app.post("/delete-upload")
 async def delete_upload(authorization: str = Header(None), uploadId: str = Query(..., min_length=1)):
-    uid = _verify_bearer(authorization)
+    decoded = _verify_and_decode(authorization)
+    uid = decoded["uid"]
     db = _db()
     uref = db.collection("users").document(uid)
 
@@ -204,10 +207,13 @@ async def delete_upload(authorization: str = Header(None), uploadId: str = Query
 
     return {"ok": True, "deletedUploadId": uploadId}
 
-# ---------------------- Delete all uploads --------------------- #
 @app.post("/delete-all-uploads")
 async def delete_all_uploads(authorization: str = Header(None)):
-    uid = _verify_bearer(authorization)
+    decoded = _verify_and_decode(authorization)
+    # Require a RECENT login (client reauths then calls this)
+    _require_recent_login(decoded, max_age_sec=180)
+
+    uid = decoded["uid"]
     db = _db()
     uref = db.collection("users").document(uid)
 
@@ -216,14 +222,13 @@ async def delete_all_uploads(authorization: str = Header(None)):
 
     return {"ok": True}
 
-# --------------------------- READ APIs ------------------------- #
 @app.get("/transactions")
 def list_transactions(
     authorization: str = Header(None),
     limit: int = Query(1000, ge=1, le=5000),
 ):
-    """Return user's transactions ordered by createdAt desc."""
-    uid = _verify_bearer(authorization)
+    decoded = _verify_and_decode(authorization)
+    uid = decoded["uid"]
     db = _db()
     uref = db.collection("users").document(uid)
     q = uref.collection("transactions").order_by("createdAt", direction=firestore.Query.DESCENDING).limit(limit)
@@ -239,8 +244,8 @@ def list_uploads(
     authorization: str = Header(None),
     limit: int = Query(500, ge=1, le=2000),
 ):
-    """Return user's uploads (upload log) ordered by createdAt desc."""
-    uid = _verify_bearer(authorization)
+    decoded = _verify_and_decode(authorization)
+    uid = decoded["uid"]
     db = _db()
     uref = db.collection("users").document(uid)
     q = uref.collection("uploads").order_by("createdAt", direction=firestore.Query.DESCENDING).limit(limit)
