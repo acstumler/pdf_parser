@@ -1,5 +1,5 @@
-from typing import Iterable
-from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Query
+from typing import Iterable, List, Dict, Any
+from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 import os
@@ -9,6 +9,10 @@ from universal_parser import extract_transactions_from_bytes
 import firebase_admin
 from firebase_admin import auth as fb_auth
 from google.cloud import firestore
+
+# Classification helpers
+from classify_transaction import classify_llm, classify_with_memory
+from clean_vendor_name import clean_vendor_name
 
 app = FastAPI()
 
@@ -25,6 +29,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------------------- Firebase utils --------------------- #
 def _init_firebase_once():
     try:
         firebase_admin.get_app()
@@ -75,10 +80,12 @@ def _delete_query(q: firestore.Query, chunk: int = 450):
         batch.commit()
         docs = docs[chunk:]
 
+# -------------------------- Health ----------------------------- #
 @app.get("/health")
 def health():
     return {"ok": True}
 
+# ------------------ Parse & Persist (create) ------------------- #
 @app.post("/parse-and-persist")
 async def parse_and_persist(authorization: str = Header(None), file: UploadFile = File(...)):
     decoded = _verify_and_decode(authorization)
@@ -90,7 +97,7 @@ async def parse_and_persist(authorization: str = Header(None), file: UploadFile 
 
     db = _db()
     uref = db.collection("users").document(uid)
-    upref = uref.collection("uploads").document()
+    upref = uref.collection("uploads").document()   # generate id
     upload_id = upref.id
 
     batch = db.batch()
@@ -133,6 +140,7 @@ async def parse_and_persist(authorization: str = Header(None), file: UploadFile 
         "transactionCount": len(rows or []),
     }
 
+# ------------------------ Replace upload ----------------------- #
 @app.post("/replace-upload")
 async def replace_upload(
     authorization: str = Header(None),
@@ -194,6 +202,7 @@ async def replace_upload(
         "transactionCount": len(rows or []),
     }
 
+# ------------------------- Delete upload ----------------------- #
 @app.post("/delete-upload")
 async def delete_upload(authorization: str = Header(None), uploadId: str = Query(..., min_length=1)):
     decoded = _verify_and_decode(authorization)
@@ -206,6 +215,7 @@ async def delete_upload(authorization: str = Header(None), uploadId: str = Query
 
     return {"ok": True, "deletedUploadId": uploadId}
 
+# ---------------------- Delete all uploads --------------------- #
 @app.post("/delete-all-uploads")
 async def delete_all_uploads(authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
@@ -244,6 +254,7 @@ async def delete_legacy_transactions(authorization: str = Header(None)):
 
     return {"ok": True, "deleted": deleted}
 
+# --------------------------- READ APIs ------------------------- #
 @app.get("/transactions")
 def list_transactions(authorization: str = Header(None), limit: int = Query(1000, ge=1, le=5000)):
     uid = _verify_and_decode(authorization)["uid"]
@@ -269,3 +280,81 @@ def list_uploads(authorization: str = Header(None), limit: int = Query(500, ge=1
         doc["id"] = d.id
         out.append(doc)
     return {"ok": True, "uploads": out}
+
+# ======================= CLASSIFICATION ======================= #
+
+def _normalize_allowed(accounts: Any) -> List[str]:
+    if not accounts:
+        return []
+    return [str(a) for a in accounts if a]
+
+@app.post("/classify-batch")
+def classify_batch(
+    payload: Dict[str, Any] = Body(...),
+    authorization: str = Header(None)
+):
+    decoded = _verify_and_decode(authorization)
+    uid = decoded["uid"]
+    db = _db()
+
+    items_in = payload.get("items") or []
+    allowed_accounts = _normalize_allowed(payload.get("allowedAccounts"))
+
+    # Simple in-request caches to avoid duplicate reads
+    memo_cache: Dict[str, str] = {}
+    user_mem_cache: Dict[str, str] = {}
+    global_mem_cache: Dict[str, str] = {}
+
+    out_items = []
+    for it in items_in:
+        item_id = str(it.get("id") or "")
+        memo = str(it.get("memo") or "")
+        amount = float(it.get("amount") or 0.0)
+        source = str(it.get("source") or "")
+
+        # Canonical vendor key
+        vendor_key = memo_cache.get(memo)
+        if not vendor_key:
+            vendor_key = clean_vendor_name(memo).lower()
+            memo_cache[memo] = vendor_key
+
+        # 1) Memory: user → global
+        account, via = classify_with_memory(
+            db=db,
+            uid=uid,
+            vendor_key=vendor_key,
+            user_mem_cache=user_mem_cache,
+            global_mem_cache=global_mem_cache
+        )
+
+        # 2) Fallback: AI (LLM) restricted to allowed accounts (if provided)
+        if not account:
+            account = classify_llm(memo=memo, amount=amount, source=source, allowed_accounts=allowed_accounts)
+            via = "ai"
+
+        out_items.append({"id": item_id, "account": account, "via": via})
+
+    return {"ok": True, "items": out_items}
+
+@app.post("/train-vendor")
+def train_vendor(
+    payload: Dict[str, Any] = Body(...),
+    authorization: str = Header(None)
+):
+    decoded = _verify_and_decode(authorization)
+    uid = decoded["uid"]
+    db = _db()
+
+    vendor_key = str(payload.get("vendorKey") or "").strip().lower()
+    account = str(payload.get("account") or "").strip()
+
+    if not vendor_key or not account:
+        raise HTTPException(status_code=400, detail="vendorKey and account required")
+
+    uref = db.collection("users").document(uid)
+    vref = uref.collection("vendor_memory").document(vendor_key)
+    vref.set({
+        "account": account,
+        "updatedAt": firestore.SERVER_TIMESTAMP,
+    })
+    return {"ok": True, "vendorKey": vendor_key, "account": account}
