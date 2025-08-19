@@ -10,7 +10,7 @@ import firebase_admin
 from firebase_admin import auth as fb_auth
 from google.cloud import firestore
 
-from utils.classify_transaction import classify_llm, classify_with_memory
+from utils.classify_transaction import finalize_classification, record_learning, classify_with_memory
 from utils.clean_vendor_name import clean_vendor_name
 
 app = FastAPI()
@@ -95,15 +95,12 @@ async def parse_and_persist(authorization: str = Header(None), file: UploadFile 
     decoded = _verify_and_decode(authorization)
     uid = decoded["uid"]
     pdf_bytes = await file.read()
-
     rows, meta = extract_transactions_from_bytes(pdf_bytes)
     source = str(meta.get("source_account") or meta.get("source") or "Unknown")
-
     db = _db()
     uref = db.collection("users").document(uid)
     upref = uref.collection("uploads").document()
     upload_id = upref.id
-
     batch = db.batch()
     batch.set(upref, {
         "fileName": file.filename,
@@ -113,7 +110,6 @@ async def parse_and_persist(authorization: str = Header(None), file: UploadFile 
         "createdAt": firestore.SERVER_TIMESTAMP,
         "updatedAt": firestore.SERVER_TIMESTAMP,
     })
-
     tcol = uref.collection("transactions")
     for r in rows or []:
         memo = str(r.get("memo") or r.get("memo_raw") or r.get("memo_clean") or "")
@@ -121,7 +117,6 @@ async def parse_and_persist(authorization: str = Header(None), file: UploadFile 
         amount = float(r.get("amount") or 0.0)
         acct = str(r.get("account") or "")
         src = str(r.get("source") or source)
-
         batch.set(tcol.document(), {
             "date": date,
             "dateKey": _parse_date_key(date),
@@ -133,9 +128,7 @@ async def parse_and_persist(authorization: str = Header(None), file: UploadFile 
             "fileName": file.filename,
             "createdAt": firestore.SERVER_TIMESTAMP,
         })
-
     batch.commit()
-
     return {
         "ok": True,
         "uploadId": upload_id,
@@ -153,19 +146,14 @@ async def replace_upload(
     decoded = _verify_and_decode(authorization)
     uid = decoded["uid"]
     pdf_bytes = await file.read()
-
     rows, meta = extract_transactions_from_bytes(pdf_bytes)
     source = str(meta.get("source_account") or meta.get("source") or "Unknown")
-
     db = _db()
     uref = db.collection("users").document(uid)
     upref = uref.collection("uploads").document(uploadId)
-
     if not upref.get().exists:
         raise HTTPException(status_code=404, detail="Upload not found")
-
     _delete_query(uref.collection("transactions").where("uploadId", "==", uploadId))
-
     batch = db.batch()
     tcol = uref.collection("transactions")
     for r in rows or []:
@@ -174,7 +162,6 @@ async def replace_upload(
         amount = float(r.get("amount") or 0.0)
         acct = str(r.get("account") or "")
         src = str(r.get("source") or source)
-
         batch.set(tcol.document(), {
             "date": date,
             "dateKey": _parse_date_key(date),
@@ -186,7 +173,6 @@ async def replace_upload(
             "fileName": file.filename,
             "createdAt": firestore.SERVER_TIMESTAMP,
         })
-
     batch.update(upref, {
         "fileName": file.filename,
         "source": source,
@@ -194,9 +180,7 @@ async def replace_upload(
         "status": "ready",
         "updatedAt": firestore.SERVER_TIMESTAMP,
     })
-
     batch.commit()
-
     return {
         "ok": True,
         "uploadId": uploadId,
@@ -211,35 +195,28 @@ async def delete_upload(authorization: str = Header(None), uploadId: str = Query
     uid = decoded["uid"]
     db = _db()
     uref = db.collection("users").document(uid)
-
     _delete_query(uref.collection("transactions").where("uploadId", "==", uploadId))
     uref.collection("uploads").document(uploadId).delete()
-
     return {"ok": True, "deletedUploadId": uploadId}
 
 @app.post("/delete-all-uploads")
 async def delete_all_uploads(authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
     _require_recent_login(decoded, max_age_sec=180)
-
     uid = decoded["uid"]
     db = _db()
     uref = db.collection("users").document(uid)
-
     _delete_query(uref.collection("transactions").where("uploadId", ">=", ""))
     _delete_query(uref.collection("uploads").where("fileName", ">=", ""))
-
     return {"ok": True}
 
 @app.post("/delete-legacy-transactions")
 async def delete_legacy_transactions(authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
     _require_recent_login(decoded, max_age_sec=180)
-
     uid = decoded["uid"]
     db = _db()
     uref = db.collection("users").document(uid)
-
     docs = list(uref.collection("transactions").stream())
     to_delete = [d for d in docs if not (d.to_dict() or {}).get("uploadId")]
     deleted = 0
@@ -251,7 +228,6 @@ async def delete_legacy_transactions(authorization: str = Header(None)):
         batch.commit()
         deleted += len(chunk)
         to_delete = to_delete[450:]
-
     return {"ok": True, "deleted": deleted}
 
 @app.get("/transactions")
@@ -286,68 +262,51 @@ def _normalize_allowed(accounts: Any) -> List[str]:
     return [str(a) for a in accounts if a]
 
 @app.post("/classify-batch")
-def classify_batch(
-    payload: Dict[str, Any] = Body(...),
-    authorization: str = Header(None)
-):
+def classify_batch(payload: Dict[str, Any] = Body(...), authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
     uid = decoded["uid"]
     db = _db()
-
     items_in = payload.get("items") or []
     allowed_accounts = _normalize_allowed(payload.get("allowedAccounts"))
-
     memo_cache: Dict[str, str] = {}
-    user_mem_cache: Dict[str, str] = {}
-    global_mem_cache: Dict[str, str] = {}
-
     out_items = []
     for it in items_in:
         item_id = str(it.get("id") or "")
         memo = str(it.get("memo") or "")
         amount = float(it.get("amount") or 0.0)
         source = str(it.get("source") or "")
-
         vendor_key = memo_cache.get(memo)
         if not vendor_key:
             vendor_key = clean_vendor_name(memo).lower()
             memo_cache[memo] = vendor_key
-
-        account, via = classify_with_memory(
+        account, via = finalize_classification(
             db=db,
             uid=uid,
             vendor_key=vendor_key,
-            user_mem_cache=user_mem_cache,
-            global_mem_cache=global_mem_cache
+            memo=memo,
+            amount=amount,
+            source=source,
+            allowed_accounts=allowed_accounts
         )
-
-        if not account:
-            account = classify_llm(memo=memo, amount=amount, source=source, allowed_accounts=allowed_accounts)
-            via = "ai"
-
+        record_learning(db=db, vendor_key=vendor_key, account=account, uid=uid)
         out_items.append({"id": item_id, "account": account, "via": via})
-
     return {"ok": True, "items": out_items}
 
 @app.post("/train-vendor")
-def train_vendor(
-    payload: Dict[str, Any] = Body(...),
-    authorization: str = Header(None)
-):
+def train_vendor(payload: Dict[str, Any] = Body(...), authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
     uid = decoded["uid"]
     db = _db()
-
     vendor_key = str(payload.get("vendorKey") or "").strip().lower()
     account = str(payload.get("account") or "").strip()
-
     if not vendor_key or not account:
         raise HTTPException(status_code=400, detail="vendorKey and account required")
-
     uref = db.collection("users").document(uid)
     vref = uref.collection("vendor_memory").document(vendor_key)
-    vref.set({
-        "account": account,
-        "updatedAt": firestore.SERVER_TIMESTAMP,
-    })
+    vref.set({"account": account, "updatedAt": firestore.SERVER_TIMESTAMP})
+    try:
+        from utils.classify_transaction import _bump_vendor_aggregate
+        _bump_vendor_aggregate(db, vendor_key, account, uid)
+    except Exception:
+        pass
     return {"ok": True, "vendorKey": vendor_key, "account": account}
