@@ -11,3 +11,4 @@ PyPDF2
 pandas
 firebase-admin
 google-cloud-firestore
+openai>=1.30.0

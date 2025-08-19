@@ -1,9 +1,8 @@
 from typing import Tuple, Dict
 from google.cloud import firestore
-from clean_vendor_name import clean_vendor_name
+from .clean_vendor_name import clean_vendor_name
 import os
 
-# Existing LLM fallback (already in this file per your repo)
 def _fallback_account(allowed_accounts=None):
   return "7090 - Uncategorized Expense"
 
@@ -82,7 +81,6 @@ def classify_with_memory(
   if global_mem_cache is None:
     global_mem_cache = {}
 
-  # user memory
   if vendor_key in user_mem_cache:
     val = user_mem_cache[vendor_key]
   else:
@@ -91,7 +89,6 @@ def classify_with_memory(
   if val:
     return val, "memory:user"
 
-  # global memory
   if vendor_key in global_mem_cache:
     gval = global_mem_cache[vendor_key]
   else:
