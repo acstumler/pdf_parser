@@ -11,8 +11,8 @@ from firebase_admin import auth as fb_auth
 from google.cloud import firestore
 
 # Classification helpers
-from classify_transaction import classify_llm, classify_with_memory
-from clean_vendor_name import clean_vendor_name
+from utils.classify_transaction import classify_llm, classify_with_memory
+from utils.clean_vendor_name import clean_vendor_name
 
 app = FastAPI()
 
