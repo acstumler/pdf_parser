@@ -1,5 +1,5 @@
 from typing import Iterable, List, Dict, Any
-from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Query, Body
+from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Query, Body, Response
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 import os
@@ -10,7 +10,6 @@ import firebase_admin
 from firebase_admin import auth as fb_auth
 from google.cloud import firestore
 
-# Classification helpers
 from utils.classify_transaction import classify_llm, classify_with_memory
 from utils.clean_vendor_name import clean_vendor_name
 
@@ -29,7 +28,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------------- Firebase utils --------------------- #
 def _init_firebase_once():
     try:
         firebase_admin.get_app()
@@ -80,12 +78,18 @@ def _delete_query(q: firestore.Query, chunk: int = 450):
         batch.commit()
         docs = docs[chunk:]
 
-# -------------------------- Health ----------------------------- #
+@app.get("/")
+def root():
+    return {"ok": True}
+
+@app.head("/")
+def root_head():
+    return Response(status_code=200)
+
 @app.get("/health")
 def health():
     return {"ok": True}
 
-# ------------------ Parse & Persist (create) ------------------- #
 @app.post("/parse-and-persist")
 async def parse_and_persist(authorization: str = Header(None), file: UploadFile = File(...)):
     decoded = _verify_and_decode(authorization)
@@ -97,7 +101,7 @@ async def parse_and_persist(authorization: str = Header(None), file: UploadFile 
 
     db = _db()
     uref = db.collection("users").document(uid)
-    upref = uref.collection("uploads").document()   # generate id
+    upref = uref.collection("uploads").document()
     upload_id = upref.id
 
     batch = db.batch()
@@ -140,7 +144,6 @@ async def parse_and_persist(authorization: str = Header(None), file: UploadFile 
         "transactionCount": len(rows or []),
     }
 
-# ------------------------ Replace upload ----------------------- #
 @app.post("/replace-upload")
 async def replace_upload(
     authorization: str = Header(None),
@@ -202,7 +205,6 @@ async def replace_upload(
         "transactionCount": len(rows or []),
     }
 
-# ------------------------- Delete upload ----------------------- #
 @app.post("/delete-upload")
 async def delete_upload(authorization: str = Header(None), uploadId: str = Query(..., min_length=1)):
     decoded = _verify_and_decode(authorization)
@@ -215,7 +217,6 @@ async def delete_upload(authorization: str = Header(None), uploadId: str = Query
 
     return {"ok": True, "deletedUploadId": uploadId}
 
-# ---------------------- Delete all uploads --------------------- #
 @app.post("/delete-all-uploads")
 async def delete_all_uploads(authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
@@ -230,7 +231,6 @@ async def delete_all_uploads(authorization: str = Header(None)):
 
     return {"ok": True}
 
-# ---- TEMP: Delete legacy transactions (no uploadId) ---- #
 @app.post("/delete-legacy-transactions")
 async def delete_legacy_transactions(authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
@@ -254,7 +254,6 @@ async def delete_legacy_transactions(authorization: str = Header(None)):
 
     return {"ok": True, "deleted": deleted}
 
-# --------------------------- READ APIs ------------------------- #
 @app.get("/transactions")
 def list_transactions(authorization: str = Header(None), limit: int = Query(1000, ge=1, le=5000)):
     uid = _verify_and_decode(authorization)["uid"]
@@ -281,8 +280,6 @@ def list_uploads(authorization: str = Header(None), limit: int = Query(500, ge=1
         out.append(doc)
     return {"ok": True, "uploads": out}
 
-# ======================= CLASSIFICATION ======================= #
-
 def _normalize_allowed(accounts: Any) -> List[str]:
     if not accounts:
         return []
@@ -300,7 +297,6 @@ def classify_batch(
     items_in = payload.get("items") or []
     allowed_accounts = _normalize_allowed(payload.get("allowedAccounts"))
 
-    # Simple in-request caches to avoid duplicate reads
     memo_cache: Dict[str, str] = {}
     user_mem_cache: Dict[str, str] = {}
     global_mem_cache: Dict[str, str] = {}
@@ -312,13 +308,11 @@ def classify_batch(
         amount = float(it.get("amount") or 0.0)
         source = str(it.get("source") or "")
 
-        # Canonical vendor key
         vendor_key = memo_cache.get(memo)
         if not vendor_key:
             vendor_key = clean_vendor_name(memo).lower()
             memo_cache[memo] = vendor_key
 
-        # 1) Memory: user → global
         account, via = classify_with_memory(
             db=db,
             uid=uid,
@@ -327,7 +321,6 @@ def classify_batch(
             global_mem_cache=global_mem_cache
         )
 
-        # 2) Fallback: AI (LLM) restricted to allowed accounts (if provided)
         if not account:
             account = classify_llm(memo=memo, amount=amount, source=source, allowed_accounts=allowed_accounts)
             via = "ai"
