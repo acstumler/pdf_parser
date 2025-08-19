@@ -48,7 +48,6 @@ def _verify_and_decode(authorization: str | None) -> dict:
     return decoded
 
 def _require_recent_login(decoded: dict, max_age_sec: int = 180):
-    # Enforce that the user's auth_time is recent (user just reauthenticated)
     auth_time = decoded.get("auth_time")
     if not isinstance(auth_time, (int, float)):
         raise HTTPException(status_code=401, detail="Recent login required")
@@ -91,7 +90,7 @@ async def parse_and_persist(authorization: str = Header(None), file: UploadFile 
 
     db = _db()
     uref = db.collection("users").document(uid)
-    upref = uref.collection("uploads").document()   # get generated id
+    upref = uref.collection("uploads").document()
     upload_id = upref.id
 
     batch = db.batch()
@@ -210,7 +209,6 @@ async def delete_upload(authorization: str = Header(None), uploadId: str = Query
 @app.post("/delete-all-uploads")
 async def delete_all_uploads(authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
-    # Require a RECENT login (client reauths then calls this)
     _require_recent_login(decoded, max_age_sec=180)
 
     uid = decoded["uid"]
@@ -222,13 +220,33 @@ async def delete_all_uploads(authorization: str = Header(None)):
 
     return {"ok": True}
 
-@app.get("/transactions")
-def list_transactions(
-    authorization: str = Header(None),
-    limit: int = Query(1000, ge=1, le=5000),
-):
+# ---- TEMP: Delete legacy transactions (no uploadId) ---- #
+@app.post("/delete-legacy-transactions")
+async def delete_legacy_transactions(authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
+    _require_recent_login(decoded, max_age_sec=180)
+
     uid = decoded["uid"]
+    db = _db()
+    uref = db.collection("users").document(uid)
+
+    docs = list(uref.collection("transactions").stream())
+    to_delete = [d for d in docs if not (d.to_dict() or {}).get("uploadId")]
+    deleted = 0
+    while to_delete:
+        batch = db.batch()
+        chunk = to_delete[:450]
+        for d in chunk:
+            batch.delete(d.reference)
+        batch.commit()
+        deleted += len(chunk)
+        to_delete = to_delete[450:]
+
+    return {"ok": True, "deleted": deleted}
+
+@app.get("/transactions")
+def list_transactions(authorization: str = Header(None), limit: int = Query(1000, ge=1, le=5000)):
+    uid = _verify_and_decode(authorization)["uid"]
     db = _db()
     uref = db.collection("users").document(uid)
     q = uref.collection("transactions").order_by("createdAt", direction=firestore.Query.DESCENDING).limit(limit)
@@ -240,12 +258,8 @@ def list_transactions(
     return {"ok": True, "transactions": out}
 
 @app.get("/uploads")
-def list_uploads(
-    authorization: str = Header(None),
-    limit: int = Query(500, ge=1, le=2000),
-):
-    decoded = _verify_and_decode(authorization)
-    uid = decoded["uid"]
+def list_uploads(authorization: str = Header(None), limit: int = Query(500, ge=1, le=2000)):
+    uid = _verify_and_decode(authorization)["uid"]
     db = _db()
     uref = db.collection("users").document(uid)
     q = uref.collection("uploads").order_by("createdAt", direction=firestore.Query.DESCENDING).limit(limit)
