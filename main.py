@@ -10,7 +10,7 @@ import firebase_admin
 from firebase_admin import auth as fb_auth
 from google.cloud import firestore
 
-from utils.classify_transaction import finalize_classification, record_learning, classify_with_memory
+from utils.classify_transaction import finalize_classification, record_learning
 from utils.clean_vendor_name import clean_vendor_name
 
 app = FastAPI()
@@ -78,6 +78,46 @@ def _delete_query(q: firestore.Query, chunk: int = 450):
         batch.commit()
         docs = docs[chunk:]
 
+# -------- Allowed accounts helper (server default) --------
+def _server_allowed_accounts() -> List[str]:
+    # Optional: allow override via env as JSON (["1000 - ...", ...])
+    import json
+    raw = os.environ.get("ALLOWED_ACCOUNTS_JSON", "").strip()
+    if raw:
+        try:
+            arr = json.loads(raw)
+            if isinstance(arr, list):
+                return [str(x) for x in arr if x]
+        except Exception:
+            pass
+    # Sensible wide list to keep server-side classification useful by default
+    return [
+        # Cash/AR/Assets/Liabilities/Equity
+        "1000 - Checking Account","1010 - Savings Account","1020 - Petty Cash",
+        "1030 - Accounts Receivable","1050 - Inventory","1060 - Fixed Assets",
+        "1070 - Accumulated Depreciation","2000 - Accounts Payable","2010 - Credit Card Payables",
+        "2040 - Loan Payable","2020 - Payroll Liabilities","2030 - Sales Tax Payable",
+        "3000 - Contributions","3010 - Draws","3020 - Retained Earnings",
+        # Revenue/COGS
+        "4000 - Product Sales","4010 - Service Income","4020 - Subscription Revenue",
+        "4030 - Consulting Income","4040 - Other Revenue","4090 - Refunds and Discounts (Contra-Revenue)",
+        "5000 - Inventory Purchases","5010 - Subcontracted Labor","5020 - Packaging & Shipping Supplies",
+        "5030 - Merchant Fees",
+        # OpEx families
+        "6000 - Salaries and Wages","6010 - Payroll Taxes","6020 - Employee Benefits",
+        "6030 - Independent Contractors","6040 - Bonuses & Commissions","6050 - Workers Compensation Insurance",
+        "6060 - Recruiting & Hiring","6100 - Rent or Lease Expense","6110 - Utilities","6120 - Insurance",
+        "6130 - Repairs & Maintenance","6140 - Office Supplies","6150 - Telephone & Internet",
+        "6200 - Advertising & Promotion","6210 - Social Media & Digital Ads",
+        "6220 - Meals & Entertainment","6230 - Client Gifts",
+        "6300 - Software Subscriptions","6310 - Bank Fees","6320 - Dues & Licenses","6330 - Postage & Delivery",
+        "6400 - Legal Fees","6410 - Accounting & Bookkeeping","6420 - Consulting Fees","6430 - Tax Prep & Advisory",
+        "6500 - Travel - Airfare","6510 - Travel - Lodging","6520 - Travel - Meals","6530 - Travel - Other (Taxis, Parking)",
+        # Taxes + fallback
+        "8000 - State Income Tax","8010 - Franchise Tax","8020 - Local Business Taxes","8030 - Estimated Tax Payments",
+        "7090 - Uncategorized Expense",
+    ]
+
 @app.get("/")
 def root():
     return {"ok": True}
@@ -90,17 +130,27 @@ def root_head():
 def health():
     return {"ok": True}
 
+# ---------------- Parse & Persist (with optional auto-classify) ----------------
 @app.post("/parse-and-persist")
-async def parse_and_persist(authorization: str = Header(None), file: UploadFile = File(...)):
+async def parse_and_persist(
+    authorization: str = Header(None),
+    file: UploadFile = File(...),
+    autoClassify: bool = Query(True)
+):
     decoded = _verify_and_decode(authorization)
     uid = decoded["uid"]
     pdf_bytes = await file.read()
+
     rows, meta = extract_transactions_from_bytes(pdf_bytes)
     source = str(meta.get("source_account") or meta.get("source") or "Unknown")
+
     db = _db()
     uref = db.collection("users").document(uid)
     upref = uref.collection("uploads").document()
     upload_id = upref.id
+
+    # First batch: create upload + transaction docs; capture new doc ids for classification pass
+    created: List[Dict[str, Any]] = []
     batch = db.batch()
     batch.set(upref, {
         "fileName": file.filename,
@@ -110,6 +160,7 @@ async def parse_and_persist(authorization: str = Header(None), file: UploadFile 
         "createdAt": firestore.SERVER_TIMESTAMP,
         "updatedAt": firestore.SERVER_TIMESTAMP,
     })
+
     tcol = uref.collection("transactions")
     for r in rows or []:
         memo = str(r.get("memo") or r.get("memo_raw") or r.get("memo_clean") or "")
@@ -117,7 +168,8 @@ async def parse_and_persist(authorization: str = Header(None), file: UploadFile 
         amount = float(r.get("amount") or 0.0)
         acct = str(r.get("account") or "")
         src = str(r.get("source") or source)
-        batch.set(tcol.document(), {
+        docref = tcol.document()
+        batch.set(docref, {
             "date": date,
             "dateKey": _parse_date_key(date),
             "memo": memo,
@@ -128,32 +180,71 @@ async def parse_and_persist(authorization: str = Header(None), file: UploadFile 
             "fileName": file.filename,
             "createdAt": firestore.SERVER_TIMESTAMP,
         })
+        created.append({"id": docref.id, "memo": memo, "amount": amount, "source": src})
+
     batch.commit()
+
+    # Second pass: auto-classify new docs and persist results
+    if autoClassify and created:
+        allowed = _server_allowed_accounts()
+        batch2 = db.batch()
+        for it in created:
+            vendor_key = clean_vendor_name(it["memo"]).lower()
+            account, via = finalize_classification(
+                db=db,
+                uid=uid,
+                vendor_key=vendor_key,
+                memo=it["memo"],
+                amount=float(it["amount"] or 0.0),
+                source=str(it["source"] or ""),
+                allowed_accounts=allowed
+            )
+            record_learning(db=db, vendor_key=vendor_key, account=account, uid=uid)
+            try:
+                batch2.update(tcol.document(it["id"]), {"account": account, "classificationSource": via})
+            except Exception:
+                pass
+        try:
+            batch2.commit()
+        except Exception:
+            pass
+
     return {
         "ok": True,
         "uploadId": upload_id,
         "fileName": file.filename,
         "source": source,
         "transactionCount": len(rows or []),
+        "autoClassified": bool(autoClassify),
     }
 
+# ---------------- Replace upload (also re-classifies new docs) ----------------
 @app.post("/replace-upload")
 async def replace_upload(
     authorization: str = Header(None),
     uploadId: str = Query(..., min_length=1),
     file: UploadFile = File(...),
+    autoClassify: bool = Query(True)
 ):
     decoded = _verify_and_decode(authorization)
     uid = decoded["uid"]
     pdf_bytes = await file.read()
+
     rows, meta = extract_transactions_from_bytes(pdf_bytes)
     source = str(meta.get("source_account") or meta.get("source") or "Unknown")
+
     db = _db()
     uref = db.collection("users").document(uid)
     upref = uref.collection("uploads").document(uploadId)
+
     if not upref.get().exists:
         raise HTTPException(status_code=404, detail="Upload not found")
+
+    # Delete previous transactions for this upload
     _delete_query(uref.collection("transactions").where("uploadId", "==", uploadId))
+
+    # Create new docs
+    created: List[Dict[str, Any]] = []
     batch = db.batch()
     tcol = uref.collection("transactions")
     for r in rows or []:
@@ -162,7 +253,9 @@ async def replace_upload(
         amount = float(r.get("amount") or 0.0)
         acct = str(r.get("account") or "")
         src = str(r.get("source") or source)
-        batch.set(tcol.document(), {
+
+        docref = tcol.document()
+        batch.set(docref, {
             "date": date,
             "dateKey": _parse_date_key(date),
             "memo": memo,
@@ -173,6 +266,8 @@ async def replace_upload(
             "fileName": file.filename,
             "createdAt": firestore.SERVER_TIMESTAMP,
         })
+        created.append({"id": docref.id, "memo": memo, "amount": amount, "source": src})
+
     batch.update(upref, {
         "fileName": file.filename,
         "source": source,
@@ -181,14 +276,42 @@ async def replace_upload(
         "updatedAt": firestore.SERVER_TIMESTAMP,
     })
     batch.commit()
+
+    # Classify the new docs
+    if autoClassify and created:
+        allowed = _server_allowed_accounts()
+        batch2 = db.batch()
+        for it in created:
+            vendor_key = clean_vendor_name(it["memo"]).lower()
+            account, via = finalize_classification(
+                db=db,
+                uid=uid,
+                vendor_key=vendor_key,
+                memo=it["memo"],
+                amount=float(it["amount"] or 0.0),
+                source=str(it["source"] or ""),
+                allowed_accounts=allowed
+            )
+            record_learning(db=db, vendor_key=vendor_key, account=account, uid=uid)
+            try:
+                batch2.update(tcol.document(it["id"]), {"account": account, "classificationSource": via})
+            except Exception:
+                pass
+        try:
+            batch2.commit()
+        except Exception:
+            pass
+
     return {
         "ok": True,
         "uploadId": uploadId,
         "fileName": file.filename,
         "source": source,
         "transactionCount": len(rows or []),
+        "autoClassified": bool(autoClassify),
     }
 
+# ---------------- Delete helpers ----------------
 @app.post("/delete-upload")
 async def delete_upload(authorization: str = Header(None), uploadId: str = Query(..., min_length=1)):
     decoded = _verify_and_decode(authorization)
@@ -230,6 +353,7 @@ async def delete_legacy_transactions(authorization: str = Header(None)):
         to_delete = to_delete[450:]
     return {"ok": True, "deleted": deleted}
 
+# ---------------- Reads ----------------
 @app.get("/transactions")
 def list_transactions(authorization: str = Header(None), limit: int = Query(1000, ge=1, le=5000)):
     uid = _verify_and_decode(authorization)["uid"]
@@ -261,24 +385,35 @@ def _normalize_allowed(accounts: Any) -> List[str]:
         return []
     return [str(a) for a in accounts if a]
 
+# ---------------- Classify batch (with persistence switch) ----------------
 @app.post("/classify-batch")
 def classify_batch(payload: Dict[str, Any] = Body(...), authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
     uid = decoded["uid"]
     db = _db()
+
     items_in = payload.get("items") or []
-    allowed_accounts = _normalize_allowed(payload.get("allowedAccounts"))
+    allowed_accounts = _normalize_allowed(payload.get("allowedAccounts")) or _server_allowed_accounts()
+    persist = bool(payload.get("persist") or False)
+
     memo_cache: Dict[str, str] = {}
     out_items = []
+
+    batch = db.batch() if persist else None
+    uref = db.collection("users").document(uid)
+    tcol = uref.collection("transactions")
+
     for it in items_in:
         item_id = str(it.get("id") or "")
         memo = str(it.get("memo") or "")
         amount = float(it.get("amount") or 0.0)
         source = str(it.get("source") or "")
+
         vendor_key = memo_cache.get(memo)
         if not vendor_key:
             vendor_key = clean_vendor_name(memo).lower()
             memo_cache[memo] = vendor_key
+
         account, via = finalize_classification(
             db=db,
             uid=uid,
@@ -289,9 +424,24 @@ def classify_batch(payload: Dict[str, Any] = Body(...), authorization: str = Hea
             allowed_accounts=allowed_accounts
         )
         record_learning(db=db, vendor_key=vendor_key, account=account, uid=uid)
+
+        if persist and item_id:
+            try:
+                batch.update(tcol.document(item_id), {"account": account, "classificationSource": via})
+            except Exception:
+                pass
+
         out_items.append({"id": item_id, "account": account, "via": via})
+
+    if persist and batch is not None:
+        try:
+            batch.commit()
+        except Exception:
+            pass
+
     return {"ok": True, "items": out_items}
 
+# ---------------- Train vendor ----------------
 @app.post("/train-vendor")
 def train_vendor(payload: Dict[str, Any] = Body(...), authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
