@@ -1,4 +1,4 @@
-from typing import Iterable, List, Dict, Any
+from typing import List, Dict, Any
 from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Query, Body, Response
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
@@ -8,7 +8,7 @@ from universal_parser import extract_transactions_from_bytes
 
 import firebase_admin
 from firebase_admin import auth as fb_auth, credentials
-from firebase_admin import firestore as fa_firestore  # use Firebase Admin's Firestore client
+from firebase_admin import firestore as fa_firestore  # Firebase Admin Firestore client
 
 from utils.classify_transaction import finalize_classification, record_learning
 from utils.clean_vendor_name import clean_vendor_name
@@ -38,7 +38,7 @@ def _init_firebase_once():
 
 def _db():
     _init_firebase_once()
-    # IMPORTANT: use Firebase Admin Firestore client so writes use the initialized service account
+    # IMPORTANT: use Firebase Admin Firestore client so it uses the mounted service account
     return fa_firestore.client()
 
 def _verify_and_decode(authorization: str | None) -> dict:
@@ -127,6 +127,21 @@ def root_head():
 def health():
     return {"ok": True}
 
+# --------- Debug endpoint to prove Firestore writes -----------
+@app.post("/debug-firestore")
+def debug_firestore(authorization: str = Header(None)):
+    uid = _verify_and_decode(authorization)["uid"]
+    db = _db()
+    doc = {
+        "ping": True,
+        "ts": fa_firestore.SERVER_TIMESTAMP,
+        "note": "debug ping"
+    }
+    ref = db.collection("users").document(uid).collection("debug_pings").document()
+    ref.set(doc)
+    return {"ok": True, "docId": ref.id}
+
+# ---------------- Parse & Persist ----------------
 @app.post("/parse-and-persist")
 async def parse_and_persist(
     authorization: str = Header(None),
@@ -302,7 +317,7 @@ async def replace_upload(
     }
 
 @app.post("/delete-upload")
-async def delete_upload(authorization: str = Header(None), uploadId: str = Query(..., min_length=1)):
+def delete_upload(authorization: str = Header(None), uploadId: str = Query(..., min_length=1)):
     decoded = _verify_and_decode(authorization)
     uid = decoded["uid"]
     db = _db()
@@ -312,7 +327,7 @@ async def delete_upload(authorization: str = Header(None), uploadId: str = Query
     return {"ok": True, "deletedUploadId": uploadId}
 
 @app.post("/delete-all-uploads")
-async def delete_all_uploads(authorization: str = Header(None)):
+def delete_all_uploads(authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
     _require_recent_login(decoded, max_age_sec=180)
     uid = decoded["uid"]
@@ -323,7 +338,7 @@ async def delete_all_uploads(authorization: str = Header(None)):
     return {"ok": True}
 
 @app.post("/delete-legacy-transactions")
-async def delete_legacy_transactions(authorization: str = Header(None)):
+def delete_legacy_transactions(authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
     _require_recent_login(decoded, max_age_sec=180)
     uid = decoded["uid"]
