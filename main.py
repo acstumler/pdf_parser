@@ -79,6 +79,20 @@ def _parse_date_key(s: str) -> str:
             pass
     return ""
 
+def _touch_user_profile(db: Any, uid: str, email: str | None):
+    try:
+        uref = db.collection("users").document(uid)
+        uref.set(
+            {
+                "email": (email or "").lower(),
+                "createdAt": fa_firestore.SERVER_TIMESTAMP,
+                "updatedAt": fa_firestore.SERVER_TIMESTAMP,
+            },
+            merge=True,
+        )
+    except Exception as e:
+        print(f"[WARN] touch profile failed: {e}", file=sys.stderr)
+
 def _delete_query(q: fa_firestore.Query, chunk: int = 450):
     docs = list(q.stream())
     deleted_total = 0
@@ -143,13 +157,14 @@ def health():
 # --------- Debug endpoint to prove Firestore writes -----------
 @app.post("/debug-firestore")
 def debug_firestore(authorization: str = Header(None)):
-    uid = _verify_and_decode(authorization)["uid"]
+    decoded = _verify_and_decode(authorization)
     db = _db()
+    _touch_user_profile(db, decoded["uid"], decoded.get("email"))
     doc = {"ping": True, "ts": fa_firestore.SERVER_TIMESTAMP, "note": "debug ping"}
-    ref = db.collection("users").document(uid).collection("debug_pings").document()
+    ref = db.collection("users").document(decoded["uid"]).collection("debug_pings").document()
     try:
         ref.set(doc)
-        print(f"[DEBUG] Wrote debug ping doc {ref.id} for uid={uid}", file=sys.stderr)
+        print(f"[DEBUG] Wrote debug ping doc {ref.id} for uid={decoded['uid']}", file=sys.stderr)
     except Exception as e:
         print(f"[ERROR] debug-firestore write failed: {e}", file=sys.stderr)
         raise
@@ -163,14 +178,15 @@ async def parse_and_persist(
     autoClassify: bool = Query(True)
 ):
     decoded = _verify_and_decode(authorization)
+    db = _db()
+    _touch_user_profile(db, decoded["uid"], decoded.get("email"))
     uid = decoded["uid"]
-    pdf_bytes = await file.read()
 
+    pdf_bytes = await file.read()
     rows, meta = extract_transactions_from_bytes(pdf_bytes)
     source = str(meta.get("source_account") or meta.get("source") or "Unknown")
     print(f"[DEBUG] Parsed {len(rows)} rows from {file.filename} (source='{source}') for uid={uid}", file=sys.stderr)
 
-    db = _db()
     uref = db.collection("users").document(uid)
     upref = uref.collection("uploads").document()
     upload_id = upref.id
@@ -257,14 +273,15 @@ async def replace_upload(
     autoClassify: bool = Query(True)
 ):
     decoded = _verify_and_decode(authorization)
+    db = _db()
+    _touch_user_profile(db, decoded["uid"], decoded.get("email"))
     uid = decoded["uid"]
-    pdf_bytes = await file.read()
 
+    pdf_bytes = await file.read()
     rows, meta = extract_transactions_from_bytes(pdf_bytes)
     source = str(meta.get("source_account") or meta.get("source") or "Unknown")
     print(f"[DEBUG] Replace uploadId={uploadId}: parsed {len(rows)} rows from {file.filename} (source='{source}')", file=sys.stderr)
 
-    db = _db()
     uref = db.collection("users").document(uid)
     upref = uref.collection("uploads").document(uploadId)
 
@@ -349,8 +366,9 @@ async def replace_upload(
 @app.post("/delete-upload")
 def delete_upload(authorization: str = Header(None), uploadId: str = Query(..., min_length=1)):
     decoded = _verify_and_decode(authorization)
-    uid = decoded["uid"]
     db = _db()
+    _touch_user_profile(db, decoded["uid"], decoded.get("email"))
+    uid = decoded["uid"]
     uref = db.collection("users").document(uid)
     _delete_query(uref.collection("transactions").where("uploadId", "==", uploadId))
     uref.collection("uploads").document(uploadId).delete()
@@ -361,8 +379,9 @@ def delete_upload(authorization: str = Header(None), uploadId: str = Query(..., 
 def delete_all_uploads(authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
     _require_recent_login(decoded, max_age_sec=180)
-    uid = decoded["uid"]
     db = _db()
+    _touch_user_profile(db, decoded["uid"], decoded.get("email"))
+    uid = decoded["uid"]
     uref = db.collection("users").document(uid)
     _delete_query(uref.collection("transactions").where("uploadId", ">=", ""))
     _delete_query(uref.collection("uploads").where("fileName", ">=", ""))
@@ -373,8 +392,9 @@ def delete_all_uploads(authorization: str = Header(None)):
 def delete_legacy_transactions(authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
     _require_recent_login(decoded, max_age_sec=180)
-    uid = decoded["uid"]
     db = _db()
+    _touch_user_profile(db, decoded["uid"], decoded.get("email"))
+    uid = decoded["uid"]
     uref = db.collection("users").document(uid)
     docs = list(uref.collection("transactions").stream())
     to_delete = [d for d in docs if not (d.to_dict() or {}).get("uploadId")]
@@ -393,8 +413,10 @@ def delete_legacy_transactions(authorization: str = Header(None)):
 # ---------------- Reads ----------------
 @app.get("/transactions")
 def list_transactions(authorization: str = Header(None), limit: int = Query(1000, ge=1, le=5000)):
-    uid = _verify_and_decode(authorization)["uid"]
+    decoded = _verify_and_decode(authorization)
     db = _db()
+    _touch_user_profile(db, decoded["uid"], decoded.get("email"))
+    uid = decoded["uid"]
     uref = db.collection("users").document(uid)
     q = uref.collection("transactions").order_by("createdAt", direction=fa_firestore.Query.DESCENDING).limit(limit)
     out = []
@@ -407,8 +429,10 @@ def list_transactions(authorization: str = Header(None), limit: int = Query(1000
 
 @app.get("/uploads")
 def list_uploads(authorization: str = Header(None), limit: int = Query(500, ge=1, le=2000)):
-    uid = _verify_and_decode(authorization)["uid"]
+    decoded = _verify_and_decode(authorization)
     db = _db()
+    _touch_user_profile(db, decoded["uid"], decoded.get("email"))
+    uid = decoded["uid"]
     uref = db.collection("users").document(uid)
     q = uref.collection("uploads").order_by("createdAt", direction=fa_firestore.Query.DESCENDING).limit(limit)
     out = []
@@ -428,8 +452,9 @@ def _normalize_allowed(accounts: Any) -> List[str]:
 @app.post("/classify-batch")
 def classify_batch(payload: Dict[str, Any] = Body(...), authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
-    uid = decoded["uid"]
     db = _db()
+    _touch_user_profile(db, decoded["uid"], decoded.get("email"))
+    uid = decoded["uid"]
 
     items_in = payload.get("items") or []
     allowed_accounts = _normalize_allowed(payload.get("allowedAccounts")) or _server_allowed_accounts()
