@@ -16,14 +16,15 @@ from utils.clean_vendor_name import clean_vendor_name
 
 app = FastAPI()
 
+# CORS: allow your prod app + localhost; allow Vercel previews via regex
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        os.environ.get("ALLOWED_ORIGIN", "*"),
+        "https://lighthouse-iq.vercel.app",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "https://lighthouse-iq.vercel.app",
     ],
+    allow_origin_regex=r"https://([a-z0-9-]+\.)?vercel\.app$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
