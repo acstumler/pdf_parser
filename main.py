@@ -7,7 +7,7 @@ import os
 from universal_parser import extract_transactions_from_bytes
 
 import firebase_admin
-from firebase_admin import auth as fb_auth
+from firebase_admin import auth as fb_auth, credentials
 from google.cloud import firestore
 
 from utils.classify_transaction import finalize_classification, record_learning
@@ -32,7 +32,9 @@ def _init_firebase_once():
     try:
         firebase_admin.get_app()
     except ValueError:
-        firebase_admin.initialize_app()
+        cred_path = os.environ.get("FIREBASE_CREDENTIALS_PATH", "/etc/secrets/firebase-service-account.json")
+        cred = credentials.Certificate(cred_path)
+        firebase_admin.initialize_app(cred)
 
 def _db():
     return firestore.Client()
@@ -78,9 +80,7 @@ def _delete_query(q: firestore.Query, chunk: int = 450):
         batch.commit()
         docs = docs[chunk:]
 
-# -------- Allowed accounts helper (server default) --------
 def _server_allowed_accounts() -> List[str]:
-    # Optional: allow override via env as JSON (["1000 - ...", ...])
     import json
     raw = os.environ.get("ALLOWED_ACCOUNTS_JSON", "").strip()
     if raw:
@@ -90,20 +90,16 @@ def _server_allowed_accounts() -> List[str]:
                 return [str(x) for x in arr if x]
         except Exception:
             pass
-    # Sensible wide list to keep server-side classification useful by default
     return [
-        # Cash/AR/Assets/Liabilities/Equity
         "1000 - Checking Account","1010 - Savings Account","1020 - Petty Cash",
         "1030 - Accounts Receivable","1050 - Inventory","1060 - Fixed Assets",
         "1070 - Accumulated Depreciation","2000 - Accounts Payable","2010 - Credit Card Payables",
         "2040 - Loan Payable","2020 - Payroll Liabilities","2030 - Sales Tax Payable",
         "3000 - Contributions","3010 - Draws","3020 - Retained Earnings",
-        # Revenue/COGS
         "4000 - Product Sales","4010 - Service Income","4020 - Subscription Revenue",
         "4030 - Consulting Income","4040 - Other Revenue","4090 - Refunds and Discounts (Contra-Revenue)",
         "5000 - Inventory Purchases","5010 - Subcontracted Labor","5020 - Packaging & Shipping Supplies",
         "5030 - Merchant Fees",
-        # OpEx families
         "6000 - Salaries and Wages","6010 - Payroll Taxes","6020 - Employee Benefits",
         "6030 - Independent Contractors","6040 - Bonuses & Commissions","6050 - Workers Compensation Insurance",
         "6060 - Recruiting & Hiring","6100 - Rent or Lease Expense","6110 - Utilities","6120 - Insurance",
@@ -113,7 +109,6 @@ def _server_allowed_accounts() -> List[str]:
         "6300 - Software Subscriptions","6310 - Bank Fees","6320 - Dues & Licenses","6330 - Postage & Delivery",
         "6400 - Legal Fees","6410 - Accounting & Bookkeeping","6420 - Consulting Fees","6430 - Tax Prep & Advisory",
         "6500 - Travel - Airfare","6510 - Travel - Lodging","6520 - Travel - Meals","6530 - Travel - Other (Taxis, Parking)",
-        # Taxes + fallback
         "8000 - State Income Tax","8010 - Franchise Tax","8020 - Local Business Taxes","8030 - Estimated Tax Payments",
         "7090 - Uncategorized Expense",
     ]
@@ -130,7 +125,6 @@ def root_head():
 def health():
     return {"ok": True}
 
-# ---------------- Parse & Persist (with optional auto-classify) ----------------
 @app.post("/parse-and-persist")
 async def parse_and_persist(
     authorization: str = Header(None),
@@ -149,7 +143,6 @@ async def parse_and_persist(
     upref = uref.collection("uploads").document()
     upload_id = upref.id
 
-    # First batch: create upload + transaction docs; capture new doc ids for classification pass
     created: List[Dict[str, Any]] = []
     batch = db.batch()
     batch.set(upref, {
@@ -184,7 +177,6 @@ async def parse_and_persist(
 
     batch.commit()
 
-    # Second pass: auto-classify new docs and persist results
     if autoClassify and created:
         allowed = _server_allowed_accounts()
         batch2 = db.batch()
@@ -218,7 +210,6 @@ async def parse_and_persist(
         "autoClassified": bool(autoClassify),
     }
 
-# ---------------- Replace upload (also re-classifies new docs) ----------------
 @app.post("/replace-upload")
 async def replace_upload(
     authorization: str = Header(None),
@@ -240,10 +231,8 @@ async def replace_upload(
     if not upref.get().exists:
         raise HTTPException(status_code=404, detail="Upload not found")
 
-    # Delete previous transactions for this upload
     _delete_query(uref.collection("transactions").where("uploadId", "==", uploadId))
 
-    # Create new docs
     created: List[Dict[str, Any]] = []
     batch = db.batch()
     tcol = uref.collection("transactions")
@@ -277,7 +266,6 @@ async def replace_upload(
     })
     batch.commit()
 
-    # Classify the new docs
     if autoClassify and created:
         allowed = _server_allowed_accounts()
         batch2 = db.batch()
@@ -311,7 +299,6 @@ async def replace_upload(
         "autoClassified": bool(autoClassify),
     }
 
-# ---------------- Delete helpers ----------------
 @app.post("/delete-upload")
 async def delete_upload(authorization: str = Header(None), uploadId: str = Query(..., min_length=1)):
     decoded = _verify_and_decode(authorization)
@@ -353,7 +340,6 @@ async def delete_legacy_transactions(authorization: str = Header(None)):
         to_delete = to_delete[450:]
     return {"ok": True, "deleted": deleted}
 
-# ---------------- Reads ----------------
 @app.get("/transactions")
 def list_transactions(authorization: str = Header(None), limit: int = Query(1000, ge=1, le=5000)):
     uid = _verify_and_decode(authorization)["uid"]
@@ -385,7 +371,6 @@ def _normalize_allowed(accounts: Any) -> List[str]:
         return []
     return [str(a) for a in accounts if a]
 
-# ---------------- Classify batch (with persistence switch) ----------------
 @app.post("/classify-batch")
 def classify_batch(payload: Dict[str, Any] = Body(...), authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
@@ -441,7 +426,6 @@ def classify_batch(payload: Dict[str, Any] = Body(...), authorization: str = Hea
 
     return {"ok": True, "items": out_items}
 
-# ---------------- Train vendor ----------------
 @app.post("/train-vendor")
 def train_vendor(payload: Dict[str, Any] = Body(...), authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
