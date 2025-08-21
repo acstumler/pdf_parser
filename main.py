@@ -8,7 +8,7 @@ from universal_parser import extract_transactions_from_bytes
 
 import firebase_admin
 from firebase_admin import auth as fb_auth, credentials
-from google.cloud import firestore
+from firebase_admin import firestore as fa_firestore  # use Firebase Admin's Firestore client
 
 from utils.classify_transaction import finalize_classification, record_learning
 from utils.clean_vendor_name import clean_vendor_name
@@ -37,7 +37,9 @@ def _init_firebase_once():
         firebase_admin.initialize_app(cred)
 
 def _db():
-    return firestore.Client()
+    _init_firebase_once()
+    # IMPORTANT: use Firebase Admin Firestore client so writes use the initialized service account
+    return fa_firestore.client()
 
 def _verify_and_decode(authorization: str | None) -> dict:
     if not authorization or not authorization.lower().startswith("bearer "):
@@ -71,7 +73,7 @@ def _parse_date_key(s: str) -> str:
             pass
     return ""
 
-def _delete_query(q: firestore.Query, chunk: int = 450):
+def _delete_query(q: fa_firestore.Query, chunk: int = 450):
     docs = list(q.stream())
     while docs:
         batch = q._client.batch()
@@ -150,8 +152,8 @@ async def parse_and_persist(
         "source": source,
         "transactionCount": int(len(rows or [])),
         "status": "ready",
-        "createdAt": firestore.SERVER_TIMESTAMP,
-        "updatedAt": firestore.SERVER_TIMESTAMP,
+        "createdAt": fa_firestore.SERVER_TIMESTAMP,
+        "updatedAt": fa_firestore.SERVER_TIMESTAMP,
     })
 
     tcol = uref.collection("transactions")
@@ -171,7 +173,7 @@ async def parse_and_persist(
             "source": src,
             "uploadId": upload_id,
             "fileName": file.filename,
-            "createdAt": firestore.SERVER_TIMESTAMP,
+            "createdAt": fa_firestore.SERVER_TIMESTAMP,
         })
         created.append({"id": docref.id, "memo": memo, "amount": amount, "source": src})
 
@@ -253,7 +255,7 @@ async def replace_upload(
             "source": src,
             "uploadId": uploadId,
             "fileName": file.filename,
-            "createdAt": firestore.SERVER_TIMESTAMP,
+            "createdAt": fa_firestore.SERVER_TIMESTAMP,
         })
         created.append({"id": docref.id, "memo": memo, "amount": amount, "source": src})
 
@@ -262,7 +264,7 @@ async def replace_upload(
         "source": source,
         "transactionCount": int(len(rows or [])),
         "status": "ready",
-        "updatedAt": firestore.SERVER_TIMESTAMP,
+        "updatedAt": fa_firestore.SERVER_TIMESTAMP,
     })
     batch.commit()
 
@@ -345,7 +347,7 @@ def list_transactions(authorization: str = Header(None), limit: int = Query(1000
     uid = _verify_and_decode(authorization)["uid"]
     db = _db()
     uref = db.collection("users").document(uid)
-    q = uref.collection("transactions").order_by("createdAt", direction=firestore.Query.DESCENDING).limit(limit)
+    q = uref.collection("transactions").order_by("createdAt", direction=fa_firestore.Query.DESCENDING).limit(limit)
     out = []
     for d in q.stream():
         doc = d.to_dict() or {}
@@ -358,7 +360,7 @@ def list_uploads(authorization: str = Header(None), limit: int = Query(500, ge=1
     uid = _verify_and_decode(authorization)["uid"]
     db = _db()
     uref = db.collection("users").document(uid)
-    q = uref.collection("uploads").order_by("createdAt", direction=firestore.Query.DESCENDING).limit(limit)
+    q = uref.collection("uploads").order_by("createdAt", direction=fa_firestore.Query.DESCENDING).limit(limit)
     out = []
     for d in q.stream():
         doc = d.to_dict() or {}
@@ -437,7 +439,7 @@ def train_vendor(payload: Dict[str, Any] = Body(...), authorization: str = Heade
         raise HTTPException(status_code=400, detail="vendorKey and account required")
     uref = db.collection("users").document(uid)
     vref = uref.collection("vendor_memory").document(vendor_key)
-    vref.set({"account": account, "updatedAt": firestore.SERVER_TIMESTAMP})
+    vref.set({"account": account, "updatedAt": fa_firestore.SERVER_TIMESTAMP})
     try:
         from utils.classify_transaction import _bump_vendor_aggregate
         _bump_vendor_aggregate(db, vendor_key, account, uid)
