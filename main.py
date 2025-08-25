@@ -9,14 +9,15 @@ from universal_parser import extract_transactions_from_bytes
 
 import firebase_admin
 from firebase_admin import auth as fb_auth, credentials
-from firebase_admin import firestore as fa_firestore  # Firebase Admin Firestore client
+from firebase_admin import firestore as fa_firestore
 
 from utils.classify_transaction import finalize_classification, record_learning
 from utils.clean_vendor_name import clean_vendor_name
 
+from routes import ai_router, journal_router, vendors_router
+
 app = FastAPI()
 
-# CORS: allow your prod app + localhost; allow Vercel previews via regex
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -29,6 +30,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(ai_router)
+app.include_router(journal_router)
+app.include_router(vendors_router)
 
 def _init_firebase_once():
     try:
@@ -155,7 +160,6 @@ def root_head():
 def health():
     return {"ok": True}
 
-# --------- Debug endpoint to prove Firestore writes -----------
 @app.post("/debug-firestore")
 def debug_firestore(authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
@@ -171,7 +175,6 @@ def debug_firestore(authorization: str = Header(None)):
         raise
     return {"ok": True, "docId": ref.id}
 
-# ---------------- Parse & Persist ----------------
 @app.post("/parse-and-persist")
 async def parse_and_persist(
     authorization: str = Header(None),
@@ -265,7 +268,6 @@ async def parse_and_persist(
         "autoClassified": bool(autoClassify),
     }
 
-# ---------------- Replace upload ----------------
 @app.post("/replace-upload")
 async def replace_upload(
     authorization: str = Header(None),
@@ -363,7 +365,6 @@ async def replace_upload(
         "autoClassified": bool(autoClassify),
     }
 
-# ---------------- Delete helpers ----------------
 @app.post("/delete-upload")
 def delete_upload(authorization: str = Header(None), uploadId: str = Query(..., min_length=1)):
     decoded = _verify_and_decode(authorization)
@@ -411,7 +412,6 @@ def delete_legacy_transactions(authorization: str = Header(None)):
     print(f"[DEBUG] Deleted {deleted} legacy transactions for uid={uid}", file=sys.stderr)
     return {"ok": True, "deleted": deleted}
 
-# ---------------- Reads ----------------
 @app.get("/transactions")
 def list_transactions(authorization: str = Header(None), limit: int = Query(1000, ge=1, le=5000)):
     decoded = _verify_and_decode(authorization)
@@ -449,7 +449,6 @@ def _normalize_allowed(accounts: Any) -> List[str]:
         return []
     return [str(a) for a in accounts if a]
 
-# ---------------- Classify batch ----------------
 @app.post("/classify-batch")
 def classify_batch(payload: Dict[str, Any] = Body(...), authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
