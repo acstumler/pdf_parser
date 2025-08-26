@@ -1,6 +1,15 @@
 services:
   - type: web
-    name: lumi-pdf-parser
-    env: docker
-    dockerfilePath: ./pdf_parser/Dockerfile
+    name: lighthouse-pdf-parser
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: FIREBASE_CREDENTIALS_PATH
+        value: /etc/secrets/firebase-service-account.json
+      - key: ALLOWED_ORIGINS
+        value: https://lighthouse-iq.vercel.app,http://localhost:5173,http://127.0.0.1:5173
+      - key: OPENAI_API_KEY
+        sync: false
+    healthCheckPath: /health
     autoDeploy: true

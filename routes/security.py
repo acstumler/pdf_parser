@@ -1,7 +1,6 @@
 import os
 from typing import List, Optional, Dict, Any
-from fastapi import Header, HTTPException, status
-from fastapi import FastAPI, Depends
+from fastapi import Header, HTTPException, status, FastAPI
 from starlette.middleware.cors import CORSMiddleware
 import firebase_admin
 from firebase_admin import auth as firebase_auth
@@ -15,13 +14,19 @@ except ValueError:
 def _parse_allowed_origins() -> List[str]:
     raw = os.getenv("ALLOWED_ORIGINS", "")
     items = [x.strip() for x in raw.split(",") if x.strip()]
-    return items or ["*"]
+    if items:
+        return items
+    return [
+        "https://lighthouse-iq.vercel.app",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
 
 def install_cors(app: FastAPI) -> None:
     origins = _parse_allowed_origins()
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=origins if origins != ["*"] else ["*"],
+        allow_origins=origins,
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "Accept"],
