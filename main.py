@@ -240,7 +240,7 @@ async def replace_upload(
     autoClassify: bool = Query(True)
 ):
     decoded = _verify_and_decode(authorization)
-    _require_recent_login(decoded, max_age_sec=180)
+    # Removed recent-login requirement here
     db = _db()
     _touch_user_profile(db, decoded["uid"], decoded.get("email"))
     uid = decoded["uid"]
@@ -325,7 +325,7 @@ async def replace_upload(
 @app.post("/delete-upload")
 def delete_upload(authorization: str = Header(None), uploadId: str = Query(..., min_length=1)):
     decoded = _verify_and_decode(authorization)
-    _require_recent_login(decoded, max_age_sec=180)
+    # Removed recent-login requirement here
     db = _db()
     _touch_user_profile(db, decoded["uid"], decoded.get("email"))
     uid = decoded["uid"]
@@ -337,6 +337,7 @@ def delete_upload(authorization: str = Header(None), uploadId: str = Query(..., 
 @app.post("/delete-all-uploads")
 def delete_all_uploads(authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
+    # Keep recent-login check for the "nuke everything" action
     _require_recent_login(decoded, max_age_sec=180)
     db = _db()
     _touch_user_profile(db, decoded["uid"], decoded.get("email"))
@@ -349,7 +350,7 @@ def delete_all_uploads(authorization: str = Header(None)):
 @app.post("/delete-legacy-transactions")
 def delete_legacy_transactions(authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
-    _require_recent_login(decoded, max_age_sec=180)
+    # Removed recent-login requirement here
     db = _db()
     _touch_user_profile(db, decoded["uid"], decoded.get("email"))
     uid = decoded["uid"]
