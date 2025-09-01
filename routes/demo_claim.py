@@ -35,14 +35,29 @@ def _init_firebase_once():
             return
         raise RuntimeError("Missing Firebase service account configuration")
 
+def _matches_code(entered: str, stored: str) -> bool:
+    """
+    Accept either a bcrypt hash (preferred) or, if the stored value doesn't look like a bcrypt hash,
+    treat it as plaintext (temporary safety-net).
+    """
+    if not stored:
+        return False
+    # bcrypt hashes start with $2a$/$2b$/$2y$
+    if stored.startswith("$2"):
+        try:
+            return bcrypt.checkpw(entered.encode("utf-8"), stored.encode("utf-8"))
+        except Exception:
+            return False
+    # fallback: plaintext equality (temporary)
+    return entered == stored
+
 @router.post("/demo-claim")
 async def demo_claim(payload: DemoClaimIn, request: Request):
     _init_firebase_once()
     db = firestore.client()
     now = datetime.now(timezone.utc)
 
-    # Query only on the range field to avoid a composite index requirement
-    # We'll filter 'active' in Python.
+    # Query only by range to avoid composite index; filter 'active' in code
     codes_ref = db.collection("demo_codes")
     q = codes_ref.where("expires_at", ">", now)
     candidates = list(q.stream())
@@ -52,15 +67,10 @@ async def demo_claim(payload: DemoClaimIn, request: Request):
         data = snap.to_dict() or {}
         if not data.get("active", False):
             continue
-        code_hash = str(data.get("code_hash") or "")
-        if not code_hash:
-            continue
-        try:
-            if bcrypt.checkpw(payload.accessCode.encode("utf-8"), code_hash.encode("utf-8")):
-                match = (snap, data)
-                break
-        except Exception:
-            continue
+        stored = str(data.get("code_hash") or "")
+        if _matches_code(payload.accessCode, stored):
+            match = (snap, data)
+            break
 
     if not match:
         raise HTTPException(status_code=400, detail="Invalid or expired access code")
@@ -88,7 +98,7 @@ async def demo_claim(payload: DemoClaimIn, request: Request):
 
     _consume(db.transaction())
 
-    # Create or update Firebase Auth user
+    # Create/update Firebase Auth user
     try:
         user = auth.get_user_by_email(payload.email)
         uid = user.uid
@@ -101,7 +111,7 @@ async def demo_claim(payload: DemoClaimIn, request: Request):
         )
         uid = user.uid
 
-    # Upsert user doc
+    # Upsert profile
     db.collection("users").document(uid).set(
         {
             "email": payload.email.lower(),
@@ -128,6 +138,5 @@ async def demo_claim(payload: DemoClaimIn, request: Request):
         }
     )
 
-    # Issue custom token for client sign-in
     token = auth.create_custom_token(uid)
     return {"customToken": token.decode("utf-8") if isinstance(token, bytes) else token}
