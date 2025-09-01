@@ -13,7 +13,7 @@ from firebase_admin import firestore as fa_firestore
 from utils.classify_transaction import finalize_classification, record_learning
 from utils.clean_vendor_name import clean_vendor_name
 
-from routes import install_cors, ai_router, journal_router, vendors_router
+from routes import install_cors, ai_router, journal_router, vendors_router, plaid_router
 
 app = FastAPI()
 
@@ -21,6 +21,7 @@ install_cors(app)
 app.include_router(ai_router)
 app.include_router(journal_router)
 app.include_router(vendors_router)
+app.include_router(plaid_router)
 
 def _init_firebase_once():
     try:
@@ -240,7 +241,6 @@ async def replace_upload(
     autoClassify: bool = Query(True)
 ):
     decoded = _verify_and_decode(authorization)
-    # Removed recent-login requirement here
     db = _db()
     _touch_user_profile(db, decoded["uid"], decoded.get("email"))
     uid = decoded["uid"]
@@ -325,7 +325,6 @@ async def replace_upload(
 @app.post("/delete-upload")
 def delete_upload(authorization: str = Header(None), uploadId: str = Query(..., min_length=1)):
     decoded = _verify_and_decode(authorization)
-    # Removed recent-login requirement here
     db = _db()
     _touch_user_profile(db, decoded["uid"], decoded.get("email"))
     uid = decoded["uid"]
@@ -337,7 +336,6 @@ def delete_upload(authorization: str = Header(None), uploadId: str = Query(..., 
 @app.post("/delete-all-uploads")
 def delete_all_uploads(authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
-    # Keep recent-login check for the "nuke everything" action
     _require_recent_login(decoded, max_age_sec=180)
     db = _db()
     _touch_user_profile(db, decoded["uid"], decoded.get("email"))
@@ -350,7 +348,6 @@ def delete_all_uploads(authorization: str = Header(None)):
 @app.post("/delete-legacy-transactions")
 def delete_legacy_transactions(authorization: str = Header(None)):
     decoded = _verify_and_decode(authorization)
-    # Removed recent-login requirement here
     db = _db()
     _touch_user_profile(db, decoded["uid"], decoded.get("email"))
     uid = decoded["uid"]
