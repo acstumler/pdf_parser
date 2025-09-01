@@ -18,7 +18,7 @@ from routes import install_cors, ai_router, journal_router, vendors_router, plai
 
 app = FastAPI()
 
-# Explicit CORS to ensure ACAO headers for Vercel origins and preflight OPTIONS
+# --- Explicit CORS (ensure ACAO/OPTIONS are returned for your Vercel app) ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -32,7 +32,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Keep your existing helper too (harmless and preserves prior behavior)
+# keep prior behavior too (harmless alongside explicit CORSMiddleware)
 install_cors(app)
 
 # Routers
