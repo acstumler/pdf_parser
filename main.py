@@ -13,7 +13,7 @@ from firebase_admin import firestore as fa_firestore
 from utils.classify_transaction import finalize_classification, record_learning
 from utils.clean_vendor_name import clean_vendor_name
 
-from routes import install_cors, ai_router, journal_router, vendors_router, plaid_router
+from routes import install_cors, ai_router, journal_router, vendors_router, plaid_router, demo_router  # + demo_router
 
 app = FastAPI()
 
@@ -22,6 +22,7 @@ app.include_router(ai_router)
 app.include_router(journal_router)
 app.include_router(vendors_router)
 app.include_router(plaid_router)
+app.include_router(demo_router)  # + include demo access endpoint
 
 def _init_firebase_once():
     try:

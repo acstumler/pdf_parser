@@ -13,3 +13,4 @@ firebase-admin
 google-cloud-firestore
 openai>=1.30.0
 plaid-python>=14.0.0
+bcrypt

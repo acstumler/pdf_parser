@@ -3,6 +3,7 @@ from .ai import router as ai_router
 from .journal import router as journal_router
 from .vendors import router as vendors_router
 from .plaid import router as plaid_router
+from .demo_claim import router as demo_router
 
 __all__ = [
     "install_cors",
@@ -12,4 +13,5 @@ __all__ = [
     "journal_router",
     "vendors_router",
     "plaid_router",
+    "demo_router",
 ]
