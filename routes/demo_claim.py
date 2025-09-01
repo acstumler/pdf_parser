@@ -19,7 +19,6 @@ def _init_firebase_once():
     try:
         firebase_admin.get_app()
     except ValueError:
-        # Same pattern as your main: prefer path, allow JSON fallback
         cred_path = os.environ.get("FIREBASE_CREDENTIALS_PATH", "/etc/secrets/firebase-service-account.json").strip()
         if cred_path and os.path.exists(cred_path):
             cred = credentials.Certificate(cred_path)
@@ -42,14 +41,17 @@ async def demo_claim(payload: DemoClaimIn, request: Request):
     db = firestore.client()
     now = datetime.now(timezone.utc)
 
-    # Find an active, unexpired code whose bcrypt hash matches
+    # Query only on the range field to avoid a composite index requirement
+    # We'll filter 'active' in Python.
     codes_ref = db.collection("demo_codes")
-    q = codes_ref.where("active", "==", True).where("expires_at", ">", now)
+    q = codes_ref.where("expires_at", ">", now)
     candidates = list(q.stream())
 
     match = None
     for snap in candidates:
         data = snap.to_dict() or {}
+        if not data.get("active", False):
+            continue
         code_hash = str(data.get("code_hash") or "")
         if not code_hash:
             continue
@@ -69,7 +71,7 @@ async def demo_claim(payload: DemoClaimIn, request: Request):
     if uses >= max_uses:
         raise HTTPException(status_code=400, detail="Access code usage limit reached")
 
-    # Consume one use transactionally
+    # Consume use transactionally
     @firestore.transactional
     def _consume(tx):
         ref = snap.reference
@@ -86,7 +88,7 @@ async def demo_claim(payload: DemoClaimIn, request: Request):
 
     _consume(db.transaction())
 
-    # Create or update Firebase Auth user; keep everything server-side
+    # Create or update Firebase Auth user
     try:
         user = auth.get_user_by_email(payload.email)
         uid = user.uid
@@ -126,6 +128,6 @@ async def demo_claim(payload: DemoClaimIn, request: Request):
         }
     )
 
-    # Issue custom token for front-end sign-in
+    # Issue custom token for client sign-in
     token = auth.create_custom_token(uid)
     return {"customToken": token.decode("utf-8") if isinstance(token, bytes) else token}
