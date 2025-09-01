@@ -1,5 +1,6 @@
 from typing import List, Dict, Any
 from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Query, Body, Response
+from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 import os
 import sys
@@ -17,7 +18,24 @@ from routes import install_cors, ai_router, journal_router, vendors_router, plai
 
 app = FastAPI()
 
+# Explicit CORS to ensure ACAO headers for Vercel origins and preflight OPTIONS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "https://lighthouse-iq.vercel.app",
+    ],
+    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Keep your existing helper too (harmless and preserves prior behavior)
 install_cors(app)
+
+# Routers
 app.include_router(ai_router)
 app.include_router(journal_router)
 app.include_router(vendors_router)
