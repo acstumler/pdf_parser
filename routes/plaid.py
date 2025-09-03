@@ -5,7 +5,6 @@ from fastapi import APIRouter, Depends, Body, Header, HTTPException
 from .security import require_auth
 from firebase_admin import firestore as fa_firestore
 
-# Only import Plaid SDK when keys are present to avoid noisy startup errors
 def _have_plaid_keys() -> bool:
     return bool(os.getenv("PLAID_CLIENT_ID") and os.getenv("PLAID_SECRET"))
 
@@ -32,8 +31,6 @@ def status():
         "webhookSet": bool(os.getenv("PLAID_WEBHOOK_URL")),
     }
 
-# ---- The endpoints below are no-ops until keys exist ----
-
 def _plaid_client():
     if not _have_plaid_keys():
         raise HTTPException(status_code=503, detail="Plaid not configured yet")
@@ -58,19 +55,28 @@ def create_link_token(user: Dict[str, Any] = Depends(require_auth)):
     from plaid.model.country_code import CountryCode
     from plaid.model.link_token_create_request import LinkTokenCreateRequest
     from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
+
     client = _plaid_client()
     uid = str(user.get("uid") or "")
-    req = LinkTokenCreateRequest(
+
+    # Build the request, only including optional fields when present.
+    kwargs: Dict[str, Any] = dict(
         products=[Products("transactions")],
         client_name="LumiLedger",
         country_codes=[CountryCode("US")],
         language="en",
         user=LinkTokenCreateRequestUser(client_user_id=uid),
-        webhook=os.getenv("PLAID_WEBHOOK_URL") or None,
-        redirect_uri=os.getenv("PLAID_REDIRECT_URI") or None,
     )
-    resp = client.link_token_create(req)
-    return {"ok": True, "link_token": resp.to_dict().get("link_token")}
+    webhook = os.getenv("PLAID_WEBHOOK_URL") or ""
+    if webhook:
+        kwargs["webhook"] = webhook
+    redirect_uri = os.getenv("PLAID_REDIRECT_URI") or ""
+    if redirect_uri:
+        kwargs["redirect_uri"] = redirect_uri
+
+    req = LinkTokenCreateRequest(**kwargs)
+    resp = client.link_token_create(req).to_dict()
+    return {"ok": True, "link_token": resp.get("link_token")}
 
 @router.post("/exchange-public-token")
 def exchange_public_token(
@@ -108,7 +114,6 @@ def exchange_public_token(
 @router.post("/sync")
 def sync_transactions(user: Dict[str, Any] = Depends(require_auth)):
     if not _have_plaid_keys():
-        # No error—just report 0 so cron/UI calls are harmless pre-approval
         return {"ok": True, "synced": 0, "pending": True}
     from plaid.model.accounts_get_request import AccountsGetRequest
     from plaid.model.transactions_sync_request import TransactionsSyncRequest
@@ -176,5 +181,4 @@ def sync_transactions(user: Dict[str, Any] = Depends(require_auth)):
 
 @router.post("/webhook")
 def webhook(payload: Dict[str, Any] = Body(...), authorization: str | None = Header(None)):
-    # We can fill this in after keys are active
     return {"ok": True}
