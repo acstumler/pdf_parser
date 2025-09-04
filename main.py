@@ -14,15 +14,14 @@ from firebase_admin import firestore as fa_firestore
 from utils.classify_transaction import finalize_classification, record_learning
 from utils.clean_vendor_name import clean_vendor_name
 
-from routes import install_cors, ai_router, journal_router, vendors_router, plaid_router, demo_router  # + demo_router
-# NEW imports:
+from routes import install_cors, ai_router, journal_router, vendors_router, plaid_router, demo_router
+
 from routes.coa import router as coa_router
 from routes.transactions_detail import router as transactions_detail_router
 from routes.journal_detail import router as journal_detail_router
 
 app = FastAPI()
 
-# --- Explicit CORS (ensure ACAO/OPTIONS are returned for your Vercel app) ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -36,16 +35,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# keep prior behavior too (harmless alongside explicit CORSMiddleware)
 install_cors(app)
 
-# Routers
 app.include_router(ai_router)
 app.include_router(journal_router)
 app.include_router(vendors_router)
 app.include_router(plaid_router)
-app.include_router(demo_router)  # + include demo access endpoint
-# NEW router includes:
+app.include_router(demo_router)
 app.include_router(coa_router)
 app.include_router(transactions_detail_router)
 app.include_router(journal_detail_router)

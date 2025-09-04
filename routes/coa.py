@@ -31,34 +31,37 @@ CHART = {
 }
 
 def _clean_contra(label: str) -> str:
-  if not label: return ""
-  t = str(label)
-  i = t.find("(")
-  while i != -1:
-    j = t.find(")", i + 1)
-    if j == -1: break
-    inner = t[i + 1 : j]
-    if "contra" in inner.lower():
-      left = t[:i].rstrip()
-      right = t[j + 1 :].lstrip()
-      if left.endswith("-"): left = left[:-1].rstrip()
-      t = (left + " " + right).strip()
-      i = t.find("(")
-      continue
-    i = t.find("(", j + 1)
-  dash = t.find(" - ")
-  if dash != -1:
-    right = t[dash + 3 :].lower()
-    if "contra" in right:
-      t = t[:dash].rstrip()
-  while "  " in t:
-    t = t.replace("  ", " ")
-  return t.strip()
+    if not label:
+        return ""
+    t = str(label)
+    i = t.find("(")
+    while i != -1:
+        j = t.find(")", i + 1)
+        if j == -1:
+            break
+        inner = t[i + 1 : j]
+        if "contra" in inner.lower():
+            left = t[:i].rstrip()
+            right = t[j + 1 :].lstrip()
+            if left.endswith("-"):
+                left = left[:-1].rstrip()
+            t = (left + " " + right).strip()
+            i = t.find("(")
+            continue
+        i = t.find("(", j + 1)
+    dash = t.find(" - ")
+    if dash != -1:
+        right = t[dash + 3 :].lower()
+        if "contra" in right:
+            t = t[:dash].rstrip()
+    while "  " in t:
+        t = t.replace("  ", " ")
+    return t.strip()
 
 @router.get("/grouped")
 def grouped(_: dict = Depends(require_auth)):
-  out = []
-  for label, options in CHART.items():
-    cleaned = [_clean_contra(x) for x in options]
-    out.append([label, cleaned])
-  return {"groups": out}
+    out = []
+    for label, options in CHART.items():
+        cleaned = [_clean_contra(x) for x in options]
+        out.append([label, cleaned])
+    return {"groups": out}
