@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 import os
 import sys
+import json
 
 from universal_parser import extract_transactions_from_bytes
 
@@ -21,16 +22,23 @@ from routes.journal_detail import router as journal_detail_router
 
 app = FastAPI()
 
-# CORS: allow Vercel + local dev (tight policy)
-ALLOWED_ORIGINS = [
-    "https://lighthouse-iq.vercel.app",
-    "http://localhost:5173",
-    "http://localhost:3000",
-]
+def _load_allowed_origins() -> List[str]:
+    raw = os.environ.get("ALLOWED_ORIGINS", "").strip()
+    if raw:
+        return [o.strip() for o in raw.split(",") if o.strip()]
+    return [
+        "https://lighthouse-iq.vercel.app",
+        "http://localhost:5173",
+        "http://localhost:3000",
+    ]
+
+_ALLOWED_ORIGINS = _load_allowed_origins()
+_ALLOW_ORIGIN_REGEX = r"https://.*\.vercel\.app"
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_origin_regex=_ALLOW_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -40,7 +48,7 @@ app.add_middleware(
 app.include_router(ai_router)
 app.include_router(journal_router)
 app.include_router(vendors_router)
-app.include_router(plaid_router)
+app.include_router(plaid_router)  # routes defined as /plaid/* in the router:contentReference[oaicite:0]{index=0}
 app.include_router(demo_router)
 app.include_router(coa_router)
 app.include_router(transactions_detail_router)
@@ -117,7 +125,6 @@ def _delete_query(q: fa_firestore.Query, chunk: int = 450):
         docs = docs[chunk:]
 
 def _server_allowed_accounts() -> List[str]:
-    import json
     raw = os.environ.get("ALLOWED_ACCOUNTS_JSON", "").strip()
     if raw:
         try:
@@ -160,6 +167,14 @@ def root_head():
 @app.get("/health")
 def health():
     return {"ok": True}
+
+# New: expose what the server believes are the allowed origins (for quick verification)
+@app.get("/cors-origins")
+def cors_origins():
+    return {
+        "allow_origins": _ALLOWED_ORIGINS,
+        "allow_origin_regex": _ALLOW_ORIGIN_REGEX,
+    }
 
 @app.post("/debug-firestore")
 def debug_firestore(authorization: str = Header(None)):
@@ -322,7 +337,7 @@ async def replace_upload(
                 uid=uid,
                 vendor_key=vendor_key,
                 memo=it["memo"],
-                amount=float(it["amount"] or 0.0),
+                amount=amount,
                 source=str(it["source"] or ""),
                 allowed_accounts=allowed
             )
