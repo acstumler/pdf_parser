@@ -1,10 +1,34 @@
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import os
 import base64
 from datetime import datetime
-from fastapi import APIRouter, Depends, Body, Header, HTTPException
-from .security import require_auth
-from firebase_admin import firestore as fa_firestore
+from fastapi import APIRouter, Body, Header, HTTPException
+from firebase_admin import firestore as fa_firestore, auth as fb_auth, credentials, initialize_app, get_app
+
+# === Firebase init (best-effort; matches main.py pattern) ===
+def _init_firebase_once():
+    try:
+        get_app()
+    except ValueError:
+        cred_path = os.environ.get("FIREBASE_CREDENTIALS_PATH", "/etc/secrets/firebase-service-account.json")
+        cred = credentials.Certificate(cred_path)
+        initialize_app(cred)
+
+def _optional_uid(authorization: Optional[str]) -> str:
+    """
+    Try to verify a Firebase ID token if provided; otherwise return 'demo'.
+    """
+    try:
+        if authorization and authorization.lower().startswith("bearer "):
+            _init_firebase_once()
+            token = authorization.split(" ", 1)[1].strip()
+            decoded = fb_auth.verify_id_token(token, check_revoked=False)
+            uid = str(decoded.get("uid") or "").strip()
+            if uid:
+                return uid
+    except Exception:
+        pass
+    return "demo"
 
 # === Encryption helpers (AES-GCM) ===
 # Key source: env PLAID_TOKEN_KEY (32 bytes). Accepts urlsafe base64 or 64-char hex.
@@ -66,7 +90,7 @@ def _decrypt_to_str(enc: Dict[str, Any]) -> str:
     pt = aes.decrypt(nonce, ct, None)
     return pt.decode("utf-8")
 
-# === Existing Plaid router & helpers (kept from your file) ===
+# === Plaid router & helpers ===
 
 def _have_plaid_keys() -> bool:
     return bool(os.getenv("PLAID_CLIENT_ID") and os.getenv("PLAID_SECRET"))
@@ -74,6 +98,7 @@ def _have_plaid_keys() -> bool:
 router = APIRouter(prefix="/plaid", tags=["plaid"])
 
 def _db():
+    _init_firebase_once()
     return fa_firestore.client()
 
 def _mmddyyyy(iso_date: str) -> str:
@@ -112,16 +137,17 @@ def _plaid_client():
     return plaid_api.PlaidApi(ApiClient(cfg))
 
 @router.post("/create-link-token")
-def create_link_token(user: Dict[str, Any] = Depends(require_auth)):
+def create_link_token(authorization: Optional[str] = Header(None)):
     if not _have_plaid_keys():
         raise HTTPException(status_code=503, detail="Plaid pending review (no keys yet)")
+
     from plaid.model.products import Products
     from plaid.model.country_code import CountryCode
     from plaid.model.link_token_create_request import LinkTokenCreateRequest
     from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
 
     client = _plaid_client()
-    uid = str(user.get("uid") or "")
+    uid = _optional_uid(authorization) or "demo"
 
     kwargs: Dict[str, Any] = dict(
         products=[Products("transactions")],
@@ -144,10 +170,11 @@ def create_link_token(user: Dict[str, Any] = Depends(require_auth)):
 @router.post("/exchange-public-token")
 def exchange_public_token(
     payload: Dict[str, Any] = Body(...),
-    user: Dict[str, Any] = Depends(require_auth),
+    authorization: Optional[str] = Header(None),
 ):
     if not _have_plaid_keys():
         raise HTTPException(status_code=503, detail="Plaid pending review (no keys yet)")
+
     from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
     client = _plaid_client()
 
@@ -165,7 +192,7 @@ def exchange_public_token(
         raise HTTPException(status_code=502, detail="plaid exchange failed")
 
     db = _db()
-    uid = str(user.get("uid") or "")
+    uid = _optional_uid(authorization)
 
     doc_data = {
         "item_id": item_id,
@@ -174,12 +201,11 @@ def exchange_public_token(
         "updatedAt": fa_firestore.SERVER_TIMESTAMP,
     }
 
-    # Encrypt token when possible; otherwise, store plaintext (should not happen in prod).
+    # Encrypt token when possible; otherwise, fallback to plaintext.
     if _enc_ready():
         try:
             doc_data["access_token_enc"] = _encrypt_str(access_token)
         except Exception:
-            # Fallback to plaintext if encryption unexpectedly fails (keeps flow running).
             doc_data["access_token"] = access_token
     else:
         doc_data["access_token"] = access_token
@@ -200,7 +226,7 @@ def _resolve_access_token(rec: Dict[str, Any]) -> str:
     return str(plain)
 
 @router.post("/sync")
-def sync_transactions(user: Dict[str, Any] = Depends(require_auth)):
+def sync_transactions(authorization: Optional[str] = Header(None)):
     if not _have_plaid_keys():
         return {"ok": True, "synced": 0, "pending": True}
 
@@ -209,7 +235,7 @@ def sync_transactions(user: Dict[str, Any] = Depends(require_auth)):
 
     client = _plaid_client()
     db = _db()
-    uid = str(user.get("uid") or "")
+    uid = _optional_uid(authorization)
     uref = db.collection("users").document(uid)
 
     items = list(uref.collection("plaid_items").stream())
@@ -224,7 +250,6 @@ def sync_transactions(user: Dict[str, Any] = Depends(require_auth)):
         try:
             access_token = _resolve_access_token(rec)
         except Exception:
-            # If decryption fails, skip this item instead of breaking the sync
             continue
 
         cursor = rec.get("cursor") or None
@@ -286,7 +311,7 @@ def sync_transactions(user: Dict[str, Any] = Depends(require_auth)):
                     "createdAt": fa_firestore.SERVER_TIMESTAMP,
                 }
             )
-            total_added += added_count
+            total_added += len(added)
 
     return {"ok": True, "synced": int(total_added)}
 
