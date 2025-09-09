@@ -14,28 +14,27 @@ from firebase_admin import firestore as fa_firestore
 from utils.classify_transaction import finalize_classification, record_learning
 from utils.clean_vendor_name import clean_vendor_name
 
-from routes import install_cors, ai_router, journal_router, vendors_router, plaid_router, demo_router
-
+from routes import ai_router, journal_router, vendors_router, plaid_router, demo_router
 from routes.coa import router as coa_router
 from routes.transactions_detail import router as transactions_detail_router
 from routes.journal_detail import router as journal_detail_router
 
 app = FastAPI()
 
+ALLOWED_ORIGINS = [
+    "https://lighthouse-iq.vercel.app",
+    "http://localhost:5173",
+    "http://localhost:3000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:3000",
-        "https://lighthouse-iq.vercel.app",
-    ],
+    allow_origins=ALLOWED_ORIGINS,
     allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-install_cors(app)
 
 app.include_router(ai_router)
 app.include_router(journal_router)
