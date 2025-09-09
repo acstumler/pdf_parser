@@ -21,15 +21,22 @@ from routes.journal_detail import router as journal_detail_router
 
 app = FastAPI()
 
-# TEMP: open CORS fully to confirm backend adds headers (then tighten)
+# CORS: allow Vercel + local dev (tight policy)
+ALLOWED_ORIGINS = [
+    "https://lighthouse-iq.vercel.app",
+    "http://localhost:5173",
+    "http://localhost:3000",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # <-- open for test
-    allow_credentials=False,      # cookies not used; keeps header valid for "*"
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Routers
 app.include_router(ai_router)
 app.include_router(journal_router)
 app.include_router(vendors_router)
@@ -48,13 +55,7 @@ def _init_firebase_once():
         firebase_admin.initialize_app(cred)
 
 def _db():
-    _init_firebase_oncé = True
-    try:
-        firebase_admin.get_app()
-    except ValueError:
-        cred_path = os.environ.get("FIREBASE_CREDENTIALS_PATH", "/etc/secrets/firebase-service-account.json")
-        cred = credentials.Certificate(cred_path)
-        firebase_admin.initialize_app(cred)
+    _init_firebase_once()
     return fa_firestore.client()
 
 def _verify_and_decode(authorization: str | None) -> dict:
