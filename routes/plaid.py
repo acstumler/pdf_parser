@@ -5,6 +5,7 @@ from datetime import datetime
 from fastapi import APIRouter, Body, Header, HTTPException
 from firebase_admin import firestore as fa_firestore, auth as fb_auth, credentials, initialize_app, get_app
 
+# === Firebase init (best-effort) ===
 def _init_firebase_once():
     try:
         get_app()
@@ -26,6 +27,7 @@ def _optional_uid(authorization: Optional[str]) -> str:
         pass
     return "demo"
 
+# === Encryption helpers (AES-GCM) ===
 try:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     _CRYPTO_AVAILABLE = True
@@ -36,12 +38,14 @@ def _load_key() -> bytes | None:
     k = os.getenv("PLAID_TOKEN_KEY") or ""
     if not k:
         return None
+    # urlsafe base64
     try:
         raw = base64.urlsafe_b64decode(k)
         if len(raw) == 32:
             return raw
     except Exception:
         pass
+    # 64-char hex
     try:
         if len(k) == 64:
             raw = bytes.fromhex(k)
@@ -74,6 +78,7 @@ def _decrypt_to_str(enc: Dict[str, Any]) -> str:
     pt = aes.decrypt(nonce, ct, None)
     return pt.decode("utf-8")
 
+# === Plaid router & helpers ===
 def _have_plaid_keys() -> bool:
     return bool(os.getenv("PLAID_CLIENT_ID") and os.getenv("PLAID_SECRET"))
 
@@ -221,12 +226,15 @@ def sync_transactions(authorization: Optional[str] = Header(None)):
     total_added = 0
     for d in items:
         rec = d.to_dict() or {}
+
+        # Decrypt (or fallback) the token
         try:
             access_token = _resolve_access_token(rec)
         except Exception:
             continue
 
-        cursor = rec.get("cursor") or None
+        # Use stored cursor if present; else start without the field
+        new_cursor = rec.get("cursor") or None
         if not access_token:
             continue
 
@@ -239,16 +247,20 @@ def sync_transactions(authorization: Optional[str] = Header(None)):
 
         has_more = True
         added_count = 0
-        new_cursor = cursor
         while has_more:
-            resp = client.transactions_sync(TransactionsSyncRequest(access_token=access_token, cursor=new_cursor)).to_dict()
+            # Build request without 'cursor' on first call if it's missing
+            req_kwargs = {"access_token": access_token}
+            if isinstance(new_cursor, str) and new_cursor:
+                req_kwargs["cursor"] = new_cursor
+            resp = client.transactions_sync(TransactionsSyncRequest(**req_kwargs)).to_dict()
+
             new_cursor = resp.get("next_cursor") or new_cursor
             has_more = bool(resp.get("has_more"))
             added = resp.get("added") or []
             if added:
                 batch = db.batch()
                 tcol = uref.collection("transactions")
-                upload_id = f"plaid:{d.id}:{new_cursor or 'init'}"
+                upload_id = f"plaid:{d.id}:{(new_cursor or 'init')}"
                 for tx in added:
                     acc_id = str(tx.get("account_id") or "")
                     src = acct_map.get(acc_id) or "Plaid Account"
@@ -272,6 +284,7 @@ def sync_transactions(authorization: Optional[str] = Header(None)):
                 batch.commit()
                 added_count += len(added)
 
+        # Persist latest cursor
         uref.collection("plaid_items").document(d.id).set(
             {"cursor": new_cursor, "updatedAt": fa_firestore.SERVER_TIMESTAMP}, merge=True
         )
@@ -285,7 +298,7 @@ def sync_transactions(authorization: Optional[str] = Header(None)):
                     "createdAt": fa_firestore.SERVER_TIMESTAMP,
                 }
             )
-            total_added += len(added)
+            total_added += added_count
 
     return {"ok": True, "synced": int(total_added)}
 
