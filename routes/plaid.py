@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import os
 import base64
 from datetime import datetime
@@ -78,15 +78,60 @@ def _decrypt_to_str(enc: Dict[str, Any]) -> str:
     pt = aes.decrypt(nonce, ct, None)
     return pt.decode("utf-8")
 
-# === Plaid router & helpers ===
-def _have_plaid_keys() -> bool:
-    return bool(os.getenv("PLAID_CLIENT_ID") and os.getenv("PLAID_SECRET"))
+# === Classification helpers ===
+from utils.clean_vendor_name import clean_vendor_name
+from utils.classify_transaction import finalize_classification, record_learning
+
+def _server_allowed_accounts() -> List[str]:
+    import json
+    raw = os.environ.get("ALLOWED_ACCOUNTS_JSON", "").strip()
+    if raw:
+        try:
+            arr = json.loads(raw)
+            if isinstance(arr, list):
+                return [str(x) for x in arr if x]
+        except Exception:
+            pass
+    return [
+        "1000 - Checking Account","1010 - Savings Account","1020 - Petty Cash",
+        "1030 - Accounts Receivable","1050 - Inventory","1060 - Fixed Assets",
+        "1070 - Accumulated Depreciation","2000 - Accounts Payable","2010 - Credit Card Payables",
+        "2040 - Loan Payable","2020 - Payroll Liabilities","2030 - Sales Tax Payable",
+        "3000 - Contributions","3010 - Draws","3020 - Retained Earnings",
+        "4000 - Product Sales","4010 - Service Income","4020 - Subscription Revenue",
+        "4030 - Consulting Income","4040 - Other Revenue","4090 - Refunds and Discounts",
+        "5000 - Inventory Purchases","5010 - Subcontracted Labor","5020 - Packaging & Shipping Supplies",
+        "5030 - Merchant Fees",
+        "6000 - Salaries and Wages","6010 - Payroll Taxes","6020 - Employee Benefits",
+        "6030 - Independent Contractors","6040 - Bonuses & Commissions","6050 - Workers Compensation Insurance",
+        "6060 - Recruiting & Hiring","6100 - Rent or Lease Expense","6110 - Utilities","6120 - Insurance",
+        "6130 - Repairs & Maintenance","6140 - Office Supplies","6150 - Telephone & Internet",
+        "6200 - Advertising & Promotion","6210 - Social Media & Digital Ads",
+        "6220 - Meals & Entertainment","6230 - Client Gifts",
+        "6300 - Software Subscriptions","6310 - Bank Fees","6320 - Dues & Licenses","6330 - Postage & Delivery",
+        "6400 - Legal Fees","6410 - Accounting & Bookkeeping","6420 - Consulting Fees","6430 - Tax Prep & Advisory",
+        "6500 - Travel - Airfare","6510 - Travel - Lodging","6520 - Travel - Meals","6530 - Travel - Other (Taxis, Parking)",
+        "8000 - State Income Tax","8010 - Franchise Tax","8020 - Local Business Taxes","8030 - Estimated Tax Payments",
+        "7090 - Uncategorized Expense",
+    ]
 
 router = APIRouter(prefix="/plaid", tags=["plaid"])
 
 def _db():
     _init_firebase_once()
     return fa_firestore.client()
+
+def _delete_query(q: fa_firestore.Query, chunk: int = 450):
+    docs = list(q.stream())
+    while docs:
+        batch = q._client.batch()
+        for d in docs[:chunk]:
+            batch.delete(d.reference)
+        try:
+            batch.commit()
+        except Exception:
+            break
+        docs = docs[chunk:]
 
 def _mmddyyyy(iso_date: str) -> str:
     try:
@@ -100,7 +145,7 @@ def status():
     env = (os.getenv("PLAID_ENV") or "sandbox").lower()
     return {
         "ok": True,
-        "configured": _have_plaid_keys(),
+        "configured": bool(os.getenv("PLAID_CLIENT_ID") and os.getenv("PLAID_SECRET")),
         "env": env,
         "redirectUriSet": bool(os.getenv("PLAID_REDIRECT_URI")),
         "webhookSet": bool(os.getenv("PLAID_WEBHOOK_URL")),
@@ -108,8 +153,6 @@ def status():
     }
 
 def _plaid_client():
-    if not _have_plaid_keys():
-        raise HTTPException(status_code=503, detail="Plaid not configured yet")
     from plaid.api import plaid_api
     from plaid import Configuration, ApiClient
     env = (os.getenv("PLAID_ENV") or "sandbox").lower().strip()
@@ -121,13 +164,12 @@ def _plaid_client():
     cfg = Configuration(host=host)
     cfg.api_key["clientId"] = os.getenv("PLAID_CLIENT_ID", "")
     cfg.api_key["secret"] = os.getenv("PLAID_SECRET", "")
+    if not cfg.api_key["clientId"] or not cfg.api_key["secret"]:
+        raise HTTPException(status_code=503, detail="Plaid not configured yet")
     return plaid_api.PlaidApi(ApiClient(cfg))
 
 @router.post("/create-link-token")
 def create_link_token(authorization: Optional[str] = Header(None)):
-    if not _have_plaid_keys():
-        raise HTTPException(status_code=503, detail="Plaid pending review (no keys yet)")
-
     from plaid.model.products import Products
     from plaid.model.country_code import CountryCode
     from plaid.model.link_token_create_request import LinkTokenCreateRequest
@@ -159,9 +201,6 @@ def exchange_public_token(
     payload: Dict[str, Any] = Body(...),
     authorization: Optional[str] = Header(None),
 ):
-    if not _have_plaid_keys():
-        raise HTTPException(status_code=503, detail="Plaid pending review (no keys yet)")
-
     from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
     client = _plaid_client()
 
@@ -208,9 +247,6 @@ def _resolve_access_token(rec: Dict[str, Any]) -> str:
 
 @router.post("/sync")
 def sync_transactions(authorization: Optional[str] = Header(None)):
-    if not _have_plaid_keys():
-        return {"ok": True, "synced": 0, "pending": True}
-
     from plaid.model.accounts_get_request import AccountsGetRequest
     from plaid.model.transactions_sync_request import TransactionsSyncRequest
 
@@ -224,6 +260,8 @@ def sync_transactions(authorization: Optional[str] = Header(None)):
         return {"ok": True, "synced": 0}
 
     total_added = 0
+    allowed = _server_allowed_accounts()
+
     for d in items:
         rec = d.to_dict() or {}
 
@@ -248,10 +286,10 @@ def sync_transactions(authorization: Optional[str] = Header(None)):
         has_more = True
         added_count = 0
         while has_more:
-            # Build request without 'cursor' on first call if it's missing
             req_kwargs = {"access_token": access_token}
             if isinstance(new_cursor, str) and new_cursor:
                 req_kwargs["cursor"] = new_cursor
+
             resp = client.transactions_sync(TransactionsSyncRequest(**req_kwargs)).to_dict()
 
             new_cursor = resp.get("next_cursor") or new_cursor
@@ -261,14 +299,17 @@ def sync_transactions(authorization: Optional[str] = Header(None)):
                 batch = db.batch()
                 tcol = uref.collection("transactions")
                 upload_id = f"plaid:{d.id}:{(new_cursor or 'init')}"
+                created = []
                 for tx in added:
                     acc_id = str(tx.get("account_id") or "")
                     src = acct_map.get(acc_id) or "Plaid Account"
-                    memo = str(tx.get("merchant_name") or tx.get("name") or "").strip()
+                    # prefer more descriptive fields
+                    memo = str(tx.get("name") or tx.get("merchant_name") or tx.get("authorized_description") or tx.get("original_description") or "").strip()
                     amount = float(tx.get("amount") or 0.0)
                     date = _mmddyyyy(str(tx.get("date") or ""))
+                    docref = tcol.document()
                     batch.set(
-                        tcol.document(),
+                        docref,
                         {
                             "date": date,
                             "dateKey": date.replace("/", ""),
@@ -281,7 +322,33 @@ def sync_transactions(authorization: Optional[str] = Header(None)):
                             "createdAt": fa_firestore.SERVER_TIMESTAMP,
                         },
                     )
+                    created.append({"id": docref.id, "memo": memo, "amount": amount, "source": src})
                 batch.commit()
+
+                # Auto-classify newly added txns
+                if created:
+                    batch2 = db.batch()
+                    for it in created:
+                        vendor_key = clean_vendor_name(it["memo"]).lower()
+                        account, via = finalize_classification(
+                            db=db,
+                            uid=uid,
+                            vendor_key=vendor_key,
+                            memo=it["memo"],
+                            amount=float(it["amount"] or 0.0),
+                            source=str(it["source"] or ""),
+                            allowed_accounts=allowed
+                        )
+                        record_learning(db=db, vendor_key=vendor_key, account=account, uid=uid)
+                        try:
+                            batch2.update(tcol.document(it["id"]), {"account": account, "classificationSource": via})
+                        except Exception:
+                            pass
+                    try:
+                        batch2.commit()
+                    except Exception:
+                        pass
+
                 added_count += len(added)
 
         # Persist latest cursor
@@ -302,6 +369,42 @@ def sync_transactions(authorization: Optional[str] = Header(None)):
 
     return {"ok": True, "synced": int(total_added)}
 
-@router.post("/webhook")
-def webhook(payload: Dict[str, Any] = Body(...), authorization: str | None = Header(None)):
-    return {"ok": True}
+@router.post("/disconnect")
+def disconnect_item(payload: Dict[str, Any] = Body(...), authorization: Optional[str] = Header(None)):
+    """
+    Body:
+      { "item_id": "...", "deleteTransactions": true|false }
+    """
+    client = _plaid_client()
+    db = _db()
+    uid = _optional_uid(authorization)
+    item_id = str(payload.get("item_id") or "").strip()
+    delete_tx = bool(payload.get("deleteTransactions") or False)
+    if not item_id:
+        raise HTTPException(status_code=400, detail="missing item_id")
+
+    uref = db.collection("users").document(uid)
+    pref = uref.collection("plaid_items").document(item_id)
+    snap = pref.get()
+    if not snap.exists:
+        return {"ok": True, "removed": False}
+
+    rec = snap.to_dict() or {}
+    # Call Plaid item/remove (best effort)
+    try:
+        from plaid.model.item_remove_request import ItemRemoveRequest
+        client.item_remove(ItemRemoveRequest(access_token=_resolve_access_token(rec)))
+    except Exception:
+        pass
+
+    # Delete the item record
+    pref.delete()
+
+    # Optionally delete this item's transactions
+    if delete_tx:
+        start = f"plaid:{item_id}:"
+        end = f"plaid:{item_id}:\uf8ff"
+        q = uref.collection("transactions").where("uploadId", ">=", start).where("uploadId", "<=", end)
+        _delete_query(q)
+
+    return {"ok": True, "removed": True, "deletedTransactions": bool(delete_tx)}
