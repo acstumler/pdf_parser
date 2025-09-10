@@ -5,7 +5,6 @@ from datetime import datetime
 from fastapi import APIRouter, Body, Header, HTTPException
 from firebase_admin import firestore as fa_firestore, auth as fb_auth, credentials, initialize_app, get_app
 
-# === Firebase init (best-effort; matches main.py pattern) ===
 def _init_firebase_once():
     try:
         get_app()
@@ -15,9 +14,6 @@ def _init_firebase_once():
         initialize_app(cred)
 
 def _optional_uid(authorization: Optional[str]) -> str:
-    """
-    Try to verify a Firebase ID token if provided; otherwise return 'demo'.
-    """
     try:
         if authorization and authorization.lower().startswith("bearer "):
             _init_firebase_once()
@@ -30,8 +26,6 @@ def _optional_uid(authorization: Optional[str]) -> str:
         pass
     return "demo"
 
-# === Encryption helpers (AES-GCM) ===
-# Key source: env PLAID_TOKEN_KEY (32 bytes). Accepts urlsafe base64 or 64-char hex.
 try:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     _CRYPTO_AVAILABLE = True
@@ -42,14 +36,12 @@ def _load_key() -> bytes | None:
     k = os.getenv("PLAID_TOKEN_KEY") or ""
     if not k:
         return None
-    # Try urlsafe base64 first
     try:
         raw = base64.urlsafe_b64decode(k)
         if len(raw) == 32:
             return raw
     except Exception:
         pass
-    # Try hex
     try:
         if len(k) == 64:
             raw = bytes.fromhex(k)
@@ -63,24 +55,16 @@ def _enc_ready() -> bool:
     return _CRYPTO_AVAILABLE and _load_key() is not None
 
 def _encrypt_str(plaintext: str) -> Dict[str, str]:
-    """
-    Encrypts a string with AES-GCM. Returns {"nonce": b64, "ciphertext": b64}.
-    """
     if not _enc_ready():
         raise RuntimeError("Encryption key not configured")
     key = _load_key()
     aes = AESGCM(key)  # type: ignore[arg-type]
     nonce = os.urandom(12)
     ct = aes.encrypt(nonce, plaintext.encode("utf-8"), None)
-    return {
-        "nonce": base64.urlsafe_b64encode(nonce).decode(),
-        "ciphertext": base64.urlsafe_b64encode(ct).decode(),
-    }
+    return {"nonce": base64.urlsafe_b64encode(nonce).decode(),
+            "ciphertext": base64.urlsafe_b64encode(ct).decode()}
 
 def _decrypt_to_str(enc: Dict[str, Any]) -> str:
-    """
-    Decrypts {"nonce": b64, "ciphertext": b64} -> str.
-    """
     if not _enc_ready():
         raise RuntimeError("Encryption key not configured")
     key = _load_key()
@@ -89,8 +73,6 @@ def _decrypt_to_str(enc: Dict[str, Any]) -> str:
     ct = base64.urlsafe_b64decode(str(enc.get("ciphertext") or ""))
     pt = aes.decrypt(nonce, ct, None)
     return pt.decode("utf-8")
-
-# === Plaid router & helpers ===
 
 def _have_plaid_keys() -> bool:
     return bool(os.getenv("PLAID_CLIENT_ID") and os.getenv("PLAID_SECRET"))
@@ -201,7 +183,6 @@ def exchange_public_token(
         "updatedAt": fa_firestore.SERVER_TIMESTAMP,
     }
 
-    # Encrypt token when possible; otherwise, fallback to plaintext.
     if _enc_ready():
         try:
             doc_data["access_token_enc"] = _encrypt_str(access_token)
@@ -214,11 +195,6 @@ def exchange_public_token(
     return {"ok": True, "item_id": item_id}
 
 def _resolve_access_token(rec: Dict[str, Any]) -> str:
-    """
-    Backward-compatible token fetcher:
-    - If encrypted token exists -> decrypt
-    - Else use legacy plaintext 'access_token'
-    """
     enc = rec.get("access_token_enc")
     if enc:
         return _decrypt_to_str(enc)
@@ -245,8 +221,6 @@ def sync_transactions(authorization: Optional[str] = Header(None)):
     total_added = 0
     for d in items:
         rec = d.to_dict() or {}
-
-        # Decrypt (or fallback) the token
         try:
             access_token = _resolve_access_token(rec)
         except Exception:
