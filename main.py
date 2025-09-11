@@ -44,11 +44,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Routers
 app.include_router(ai_router)
 app.include_router(journal_router)
 app.include_router(vendors_router)
-app.include_router(plaid_router)  # routes defined as /plaid/* in the router:contentReference[oaicite:0]{index=0}
+app.include_router(plaid_router)
 app.include_router(demo_router)
 app.include_router(coa_router)
 app.include_router(transactions_detail_router)
@@ -168,7 +167,6 @@ def root_head():
 def health():
     return {"ok": True}
 
-# New: expose what the server believes are the allowed origins (for quick verification)
 @app.get("/cors-origins")
 def cors_origins():
     return {
@@ -337,7 +335,7 @@ async def replace_upload(
                 uid=uid,
                 vendor_key=vendor_key,
                 memo=it["memo"],
-                amount=amount,
+                amount=float(it["amount"] or 0.0),  # fix: use item amount
                 source=str(it["source"] or ""),
                 allowed_accounts=allowed
             )

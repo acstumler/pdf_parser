@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import Any, Dict
 from firebase_admin import firestore as fa_firestore
 from .security import require_auth
+from utils.clean_vendor_name import clean_vendor_name
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
 
@@ -49,8 +50,8 @@ def reclassify(tid: str, body: Dict[str, Any], user: Dict[str, Any] = Depends(re
     target_ref.update({"account": account})
     memo = str(target_doc.get("memo_clean") or target_doc.get("memo") or target_doc.get("memo_raw") or "").strip()
     if memo:
-        key = memo[:80]
-        db.collection("users").document(uid).collection("vendor_memory").document(key).set(
+        vendor_key = clean_vendor_name(memo).lower()
+        db.collection("users").document(uid).collection("vendor_memory").document(vendor_key).set(
             {"memoSample": memo, "account": account}, merge=True
         )
     return {"ok": True, "account": account}
