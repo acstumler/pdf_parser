@@ -35,17 +35,22 @@ def _account_type(account: str) -> str:
     return "Liability"
   return "Expense"
 
+def _find_transaction_doc(db, uid: str, tid: str):
+  tcol = db.collection("users").document(uid).collection("transactions")
+  snap = tcol.document(tid).get()
+  if snap.exists:
+    return snap.to_dict() or {}
+  for d in tcol.stream():
+    t = d.to_dict() or {}
+    if _uid_for(t) == tid:
+      return t
+  return None
+
 @router.get("/entries/by-uid/{tid}")
 def by_uid(tid: str, user: Dict[str, Any] = Depends(require_auth)):
   uid = str(user.get("uid") or "")
   db = _db()
-  tcol = db.collection("users").document(uid).collection("transactions")
-  tdoc = None
-  for d in tcol.stream():
-    t = d.to_dict() or {}
-    if (t.get("id") or _uid_for(t)) == tid:
-      tdoc = t
-      break
+  tdoc = _find_transaction_doc(db, uid, tid)
   if not tdoc:
     raise HTTPException(status_code=404, detail="Transaction not found")
 

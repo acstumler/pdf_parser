@@ -18,16 +18,25 @@ def _uid_for(t: Dict[str, Any]) -> str:
         amount = 0.0
     return f"{date}-{memo}-{amount}"
 
+def _find_transaction_doc(db, uid: str, tid: str):
+    tcol = db.collection("users").document(uid).collection("transactions")
+    snap = tcol.document(tid).get()
+    if snap.exists:
+        return snap.reference, (snap.to_dict() or {})
+    for d in tcol.stream():
+        t = d.to_dict() or {}
+        if _uid_for(t) == tid:
+            return d.reference, t
+    return None, None
+
 @router.get("/{tid}")
 def get_one(tid: str, user: Dict[str, Any] = Depends(require_auth)):
     uid = str(user.get("uid") or "")
     db = _db()
-    tcol = db.collection("users").document(uid).collection("transactions")
-    for d in tcol.stream():
-        t = d.to_dict() or {}
-        if (t.get("id") or _uid_for(t)) == tid:
-            return {"transaction": {**t, "id": tid}}
-    raise HTTPException(status_code=404, detail="Transaction not found")
+    ref, doc = _find_transaction_doc(db, uid, tid)
+    if not ref:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    return {"transaction": {**doc, "id": tid}}
 
 @router.post("/{tid}/reclassify")
 def reclassify(tid: str, body: Dict[str, Any], user: Dict[str, Any] = Depends(require_auth)):
@@ -36,19 +45,11 @@ def reclassify(tid: str, body: Dict[str, Any], user: Dict[str, Any] = Depends(re
     if not account:
         raise HTTPException(status_code=400, detail="Missing account")
     db = _db()
-    tcol = db.collection("users").document(uid).collection("transactions")
-    target_ref = None
-    target_doc = None
-    for d in tcol.stream():
-        t = d.to_dict() or {}
-        if (t.get("id") or _uid_for(t)) == tid:
-            target_ref = d.reference
-            target_doc = t
-            break
-    if target_ref is None:
+    ref, doc = _find_transaction_doc(db, uid, tid)
+    if not ref:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    target_ref.update({"account": account})
-    memo = str(target_doc.get("memo_clean") or target_doc.get("memo") or target_doc.get("memo_raw") or "").strip()
+    ref.update({"account": account})
+    memo = str(doc.get("memo_clean") or doc.get("memo") or doc.get("memo_raw") or "").strip()
     if memo:
         vendor_key = clean_vendor_name(memo).lower()
         db.collection("users").document(uid).collection("vendor_memory").document(vendor_key).set(
