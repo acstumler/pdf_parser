@@ -2,19 +2,14 @@ from typing import List, Dict, Any
 from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Query, Body, Response
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
-import os
-import json
-
+import os, json
 from universal_parser import extract_transactions_from_bytes
-
 import firebase_admin
 from firebase_admin import auth as fb_auth, credentials
 from firebase_admin import firestore as fa_firestore
-
 from utils.classify_transaction import finalize_classification, record_learning
 from utils.clean_vendor_name import clean_vendor_name
 from utils.display_amount import compute_display_amount
-
 from routes import ai_router, journal_router, vendors_router, plaid_router, demo_router
 from routes.coa import router as coa_router
 from routes.transactions_detail import router as transactions_detail_router
@@ -26,23 +21,12 @@ def _load_allowed_origins() -> List[str]:
     raw = os.environ.get("ALLOWED_ORIGINS", "").strip()
     if raw:
         return [o.strip() for o in raw.split(",") if o.strip()]
-    return [
-        "https://lighthouse-iq.vercel.app",
-        "http://localhost:5173",
-        "http://localhost:3000",
-    ]
+    return ["https://lighthouse-iq.vercel.app","http://localhost:5173","http://localhost:3000"]
 
 _ALLOWED_ORIGINS = _load_allowed_origins()
 _ALLOW_ORIGIN_REGEX = r"https://.*\.vercel\.app"
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_ALLOWED_ORIGINS,
-    allow_origin_regex=_ALLOW_ORIGIN_REGEX,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=_ALLOWED_ORIGINS, allow_origin_regex=_ALLOW_ORIGIN_REGEX, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 app.include_router(ai_router)
 app.include_router(journal_router)
@@ -89,7 +73,7 @@ def _require_recent_login(decoded: dict, max_age_sec: int = 180):
 def _parse_date_key(s: str) -> str:
     if not s:
         return ""
-    for fmt in ("%m/%d/%Y", "%Y-%m-%d"):
+    for fmt in ("%m/%d/%Y","%Y-%m-%d"):
         try:
             dt = datetime.strptime(s, fmt)
             return dt.strftime("%Y%m%d")
@@ -100,14 +84,7 @@ def _parse_date_key(s: str) -> str:
 def _touch_user_profile(db: Any, uid: str, email: str | None):
     try:
         uref = db.collection("users").document(uid)
-        uref.set(
-            {
-                "email": (email or "").lower(),
-                "createdAt": fa_firestore.SERVER_TIMESTAMP,
-                "updatedAt": fa_firestore.SERVER_TIMESTAMP,
-            },
-            merge=True,
-        )
+        uref.set({"email": (email or "").lower(),"createdAt": fa_firestore.SERVER_TIMESTAMP,"updatedAt": fa_firestore.SERVER_TIMESTAMP}, merge=True)
     except Exception:
         pass
 
@@ -171,39 +148,22 @@ def health():
 def cors_origins():
     return {"allow_origins": _ALLOWED_ORIGINS, "allow_origin_regex": _ALLOW_ORIGIN_REGEX}
 
-@app.post("/debug-firestore")
-def debug_firestore(authorization: str = Header(None)):
-    decoded = _verify_and_decode(authorization)
-    db = _db()
-    _touch_user_profile(db, decoded["uid"], decoded.get("email"))
-    ref = db.collection("users").document(decoded["uid"]).collection("debug_pings").document()
-    ref.set({"ping": True, "ts": fa_firestore.SERVER_TIMESTAMP, "note": "debug ping"}, merge=True)
-    return {"ok": True, "docId": ref.id}
-
 @app.post("/parse-and-persist")
-async def parse_and_persist(
-    authorization: str = Header(None),
-    file: UploadFile = File(...),
-    autoClassify: bool = Query(True)
-):
+async def parse_and_persist(authorization: str = Header(None), file: UploadFile = File(...), autoClassify: bool = Query(True)):
     decoded = _verify_and_decode(authorization)
     db = _db()
     _touch_user_profile(db, decoded["uid"], decoded.get("email"))
     uid = decoded["uid"]
-
     pdf_bytes = await file.read()
     rows, meta = extract_transactions_from_bytes(pdf_bytes)
     source = str(meta.get("source_account") or meta.get("source") or "Unknown")
     src_type_default = str(meta.get("source_type") or meta.get("source_kind") or "").lower().strip() or "bank"
-
     uref = db.collection("users").document(uid)
     upref = uref.collection("uploads").document()
     upload_id = upref.id
-
     created: List[Dict[str, Any]] = []
     batch = db.batch()
-    batch.set(upref, {"fileName": file.filename, "source": source, "transactionCount": int(len(rows or [])), "status": "ready", "createdAt": fa_firestore.SERVER_TIMESTAMP, "updatedAt": fa_firestore.SERVER_TIMESTAMP})
-
+    batch.set(upref, {"fileName": file.filename,"source": source,"transactionCount": int(len(rows or [])),"status": "ready","createdAt": fa_firestore.SERVER_TIMESTAMP,"updatedAt": fa_firestore.SERVER_TIMESTAMP})
     tcol = uref.collection("transactions")
     for r in rows or []:
         memo = str(r.get("memo") or r.get("memo_raw") or r.get("memo_clean") or "")
@@ -213,13 +173,11 @@ async def parse_and_persist(
         src = str(r.get("source") or source)
         date_key = _parse_date_key(date)
         row_src_type = str(r.get("sourceType") or src_type_default or "bank")
-        disp = compute_display_amount(db=db, uid=uid, amount=amount, source_type=row_src_type, date=date, date_key=date_key)
+        disp = compute_display_amount(db=db, uid=uid, amount=amount, source_type=row_src_type, source=src, date=date, date_key=date_key)
         docref = tcol.document()
-        batch.set(docref, {"date": date, "dateKey": date_key, "memo": memo, "amount": amount, "displayAmount": disp, "account": acct, "source": src, "sourceType": row_src_type, "uploadId": upload_id, "fileName": file.filename, "createdAt": fa_firestore.SERVER_TIMESTAMP})
+        batch.set(docref, {"date": date,"dateKey": date_key,"memo": memo,"amount": amount,"displayAmount": disp,"account": acct,"source": src,"sourceType": row_src_type,"uploadId": upload_id,"fileName": file.filename,"createdAt": fa_firestore.SERVER_TIMESTAMP})
         created.append({"id": docref.id, "memo": memo, "amount": amount, "source": src})
-
     batch.commit()
-
     if autoClassify and created:
         allowed = _server_allowed_accounts()
         batch2 = db.batch()
@@ -235,34 +193,23 @@ async def parse_and_persist(
             batch2.commit()
         except Exception:
             pass
-
-    return {"ok": True, "uploadId": upload_id, "fileName": file.filename, "source": source, "transactionCount": len(rows or []), "autoClassified": bool(autoClassify)}
+    return {"ok": True,"uploadId": upload_id,"fileName": file.filename,"source": source,"transactionCount": len(rows or []),"autoClassified": bool(autoClassify)}
 
 @app.post("/replace-upload")
-async def replace_upload(
-    authorization: str = Header(None),
-    uploadId: str = Query(..., min_length=1),
-    file: UploadFile = File(...),
-    autoClassify: bool = Query(True)
-):
+async def replace_upload(authorization: str = Header(None), uploadId: str = Query(..., min_length=1), file: UploadFile = File(...), autoClassify: bool = Query(True)):
     decoded = _verify_and_decode(authorization)
     db = _db()
     _touch_user_profile(db, decoded["uid"], decoded.get("email"))
     uid = decoded["uid"]
-
     pdf_bytes = await file.read()
     rows, meta = extract_transactions_from_bytes(pdf_bytes)
     source = str(meta.get("source_account") or meta.get("source") or "Unknown")
     src_type_default = str(meta.get("source_type") or meta.get("source_kind") or "").lower().strip() or "bank"
-
     uref = db.collection("users").document(uid)
     upref = uref.collection("uploads").document(uploadId)
-
     if not upref.get().exists:
         raise HTTPException(status_code=404, detail="Upload not found")
-
     _delete_query(uref.collection("transactions").where("uploadId", "==", uploadId))
-
     created: List[Dict[str, Any]] = []
     batch = db.batch()
     tcol = uref.collection("transactions")
@@ -274,14 +221,12 @@ async def replace_upload(
         src = str(r.get("source") or source)
         date_key = _parse_date_key(date)
         row_src_type = str(r.get("sourceType") or src_type_default or "bank")
-        disp = compute_display_amount(db=db, uid=uid, amount=amount, source_type=row_src_type, date=date, date_key=date_key)
+        disp = compute_display_amount(db=db, uid=uid, amount=amount, source_type=row_src_type, source=src, date=date, date_key=date_key)
         docref = tcol.document()
-        batch.set(docref, {"date": date, "dateKey": date_key, "memo": memo, "amount": amount, "displayAmount": disp, "account": acct, "source": src, "sourceType": row_src_type, "uploadId": uploadId, "fileName": file.filename, "createdAt": fa_firestore.SERVER_TIMESTAMP})
+        batch.set(docref, {"date": date,"dateKey": date_key,"memo": memo,"amount": amount,"displayAmount": disp,"account": acct,"source": src,"sourceType": row_src_type,"uploadId": uploadId,"fileName": file.filename,"createdAt": fa_firestore.SERVER_TIMESTAMP})
         created.append({"id": docref.id, "memo": memo, "amount": amount, "source": src})
-
-    batch.update(upref, {"fileName": file.filename, "source": source, "transactionCount": int(len(rows or [])), "status": "ready", "updatedAt": fa_firestore.SERVER_TIMESTAMP})
+    batch.update(upref, {"fileName": file.filename,"source": source,"transactionCount": int(len(rows or [])),"status": "ready","updatedAt": fa_firestore.SERVER_TIMESTAMP})
     batch.commit()
-
     if autoClassify and created:
         allowed = _server_allowed_accounts()
         batch2 = db.batch()
@@ -297,51 +242,7 @@ async def replace_upload(
             batch2.commit()
         except Exception:
             pass
-
-    return {"ok": True, "uploadId": uploadId, "fileName": file.filename, "source": source, "transactionCount": len(rows or []), "autoClassified": bool(autoClassify)}
-
-@app.post("/delete-upload")
-def delete_upload(authorization: str = Header(None), uploadId: str = Query(..., min_length=1)):
-    decoded = _verify_and_decode(authorization)
-    db = _db()
-    _touch_user_profile(db, decoded["uid"], decoded.get("email"))
-    uid = decoded["uid"]
-    uref = db.collection("users").document(uid)
-    _delete_query(uref.collection("transactions").where("uploadId", "==", uploadId))
-    uref.collection("uploads").document(uploadId).delete()
-    return {"ok": True, "deletedUploadId": uploadId}
-
-@app.post("/delete-all-uploads")
-def delete_all_uploads(authorization: str = Header(None)):
-    decoded = _verify_and_decode(authorization)
-    _require_recent_login(decoded, max_age_sec=180)
-    db = _db()
-    _touch_user_profile(db, decoded["uid"], decoded.get("email"))
-    uid = decoded["uid"]
-    uref = db.collection("users").document(uid)
-    _delete_query(uref.collection("transactions").where("uploadId", ">=", ""))
-    _delete_query(uref.collection("uploads").where("fileName", ">=", ""))
-    return {"ok": True}
-
-@app.post("/delete-legacy-transactions")
-def delete_legacy_transactions(authorization: str = Header(None)):
-    decoded = _verify_and_decode(authorization)
-    db = _db()
-    _touch_user_profile(db, decoded["uid"], decoded.get("email"))
-    uid = decoded["uid"]
-    uref = db.collection("users").document(uid)
-    docs = list(uref.collection("transactions").stream())
-    to_delete = [d for d in docs if not (d.to_dict() or {}).get("uploadId")]
-    deleted = 0
-    while to_delete:
-        batch = db.batch()
-        chunk = to_delete[:450]
-        for d in chunk:
-            batch.delete(d.reference)
-        batch.commit()
-        deleted += len(chunk)
-        to_delete = to_delete[450:]
-    return {"ok": True, "deleted": deleted}
+    return {"ok": True,"uploadId": uploadId,"fileName": file.filename,"source": source,"transactionCount": len(rows or []),"autoClassified": bool(autoClassify)}
 
 @app.get("/transactions")
 def list_transactions(authorization: str = Header(None), limit: int = Query(1000, ge=1, le=5000)):
@@ -372,46 +273,3 @@ def list_uploads(authorization: str = Header(None), limit: int = Query(500, ge=1
         doc["id"] = d.id
         out.append(doc)
     return {"ok": True, "uploads": out}
-
-def _normalize_allowed(accounts: Any) -> List[str]:
-    if not accounts:
-        return []
-    return [str(a) for a in accounts if a]
-
-@app.post("/classify-batch")
-def classify_batch(payload: Dict[str, Any] = Body(...), authorization: str = Header(None)):
-    decoded = _verify_and_decode(authorization)
-    db = _db()
-    _touch_user_profile(db, decoded["uid"], decoded.get("email"))
-    uid = decoded["uid"]
-    items_in = payload.get("items") or []
-    allowed_accounts = _normalize_allowed(payload.get("allowedAccounts")) or _server_allowed_accounts()
-    persist = bool(payload.get("persist") or False)
-    memo_cache: Dict[str, str] = {}
-    out_items = []
-    batch = db.batch() if persist else None
-    uref = db.collection("users").document(uid)
-    tcol = uref.collection("transactions")
-    for it in items_in:
-        item_id = str(it.get("id") or "")
-        memo = str(it.get("memo") or "")
-        amount = float(it.get("amount") or 0.0)
-        source = str(it.get("source") or "")
-        vendor_key = memo_cache.get(memo)
-        if not vendor_key:
-            vendor_key = clean_vendor_name(memo).lower()
-            memo_cache[memo] = vendor_key
-        account, via = finalize_classification(db=db, uid=uid, vendor_key=vendor_key, memo=memo, amount=amount, source=source, allowed_accounts=allowed_accounts)
-        record_learning(db=db, vendor_key=vendor_key, account=account, uid=uid)
-        if persist and item_id:
-            try:
-                batch.update(tcol.document(item_id), {"account": account, "classificationSource": via})
-            except Exception:
-                pass
-        out_items.append({"id": item_id, "account": account, "via": via})
-    if persist and batch is not None:
-        try:
-            batch.commit()
-        except Exception:
-            pass
-    return {"ok": True, "items": out_items}
