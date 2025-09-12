@@ -41,7 +41,6 @@ def entries(body: Dict[str, Any] = Body(...), user: Dict[str, Any] = Depends(req
         source = str(t.get("source") or t.get("source_account") or "Offset")
         uploaded_at = t.get("uploadedAt")
         uploaded_from = t.get("uploadedFrom")
-
         abs_amt = abs(amount)
         txn_id = str(t.get("id") or _uid_for(t))
 
