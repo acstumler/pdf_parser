@@ -58,17 +58,16 @@ def _encrypt_str(plaintext: str) -> Dict[str, str]:
     if not _enc_ready():
         raise RuntimeError("Encryption key not configured")
     key = _load_key()
-    aes = AESGCM(key)  # type: ignore[arg-type]
+    aes = AESGCM(key)
     nonce = os.urandom(12)
     ct = aes.encrypt(nonce, plaintext.encode("utf-8"), None)
-    return {"nonce": base64.urlsafe_b64encode(nonce).decode(),
-            "ciphertext": base64.urlsafe_b64encode(ct).decode()}
+    return {"nonce": base64.urlsafe_b64encode(nonce).decode(), "ciphertext": base64.urlsafe_b64encode(ct).decode()}
 
 def _decrypt_to_str(enc: Dict[str, Any]) -> str:
     if not _enc_ready():
         raise RuntimeError("Encryption key not configured")
     key = _load_key()
-    aes = AESGCM(key)  # type: ignore[arg-type]
+    aes = AESGCM(key)
     nonce = base64.urlsafe_b64decode(str(enc.get("nonce") or ""))
     ct = base64.urlsafe_b64decode(str(enc.get("ciphertext") or ""))
     pt = aes.decrypt(nonce, ct, None)
@@ -76,6 +75,7 @@ def _decrypt_to_str(enc: Dict[str, Any]) -> str:
 
 from utils.clean_vendor_name import clean_vendor_name
 from utils.classify_transaction import finalize_classification, record_learning
+from utils.display_amount import compute_display_amount
 
 def _server_allowed_accounts() -> List[str]:
     import json
@@ -274,11 +274,15 @@ def sync_transactions(authorization: Optional[str] = Header(None)):
         if not access_token:
             continue
         accounts = client.accounts_get(AccountsGetRequest(access_token=access_token)).to_dict()
-        acct_map = {}
+        acct_map: Dict[str, str] = {}
+        acct_type_map: Dict[str, str] = {}
         for a in accounts.get("accounts") or []:
+            acc_id = str(a.get("account_id") or "")
             name = str(a.get("name") or a.get("official_name") or "Account")
             mask = str(a.get("mask") or "")
-            acct_map[str(a.get("account_id") or "")] = f"{name} ****{mask}" if mask else name
+            acct_map[acc_id] = f"{name} ****{mask}" if mask else name
+            typ = (a.get("type") or "").lower().strip()
+            acct_type_map[acc_id] = "card" if typ == "credit" else "bank"
         has_more = True
         added_count = 0
         while has_more:
@@ -297,11 +301,14 @@ def sync_transactions(authorization: Optional[str] = Header(None)):
                 for tx in added:
                     acc_id = str(tx.get("account_id") or "")
                     src = acct_map.get(acc_id) or "Plaid Account"
+                    src_type = acct_type_map.get(acc_id, "bank")
                     memo = str(tx.get("name") or tx.get("merchant_name") or tx.get("authorized_description") or tx.get("original_description") or "").strip()
                     amount = float(tx.get("amount") or 0.0)
                     date = _mmddyyyy(str(tx.get("date") or ""))
+                    date_key = date.replace("/", "")
+                    disp = compute_display_amount(db=db, uid=uid, amount=amount, source_type=src_type, date=date, date_key=date_key)
                     docref = tcol.document()
-                    batch.set(docref, {"date": date, "dateKey": date.replace("/", ""), "memo": memo, "amount": amount, "account": "", "source": src, "uploadId": upload_id, "fileName": "Plaid", "createdAt": fa_firestore.SERVER_TIMESTAMP})
+                    batch.set(docref, {"date": date, "dateKey": date_key, "memo": memo, "amount": amount, "displayAmount": disp, "account": "", "source": src, "sourceType": src_type, "uploadId": upload_id, "fileName": "Plaid", "createdAt": fa_firestore.SERVER_TIMESTAMP})
                     created.append({"id": docref.id, "memo": memo, "amount": amount, "source": src})
                 batch.commit()
                 if created:
