@@ -31,9 +31,10 @@ def entries(body: Dict[str, Any] = Body(...), user: Dict[str, Any] = Depends(req
     txns: List[Dict[str, Any]] = body.get("transactions") or []
     if not isinstance(txns, list):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
-
     lines: List[Dict[str, Any]] = []
     for i, t in enumerate(txns):
+        if t.get("eventLeader") is False or str(t.get("pairReason") or "") == "shadow":
+            continue
         date = str(t.get("date") or "")
         memo = str(t.get("memo_clean") or t.get("memo") or t.get("memo_raw") or "")
         amount = _to_number(t.get("amount"))
@@ -43,30 +44,8 @@ def entries(body: Dict[str, Any] = Body(...), user: Dict[str, Any] = Depends(req
         uploaded_from = t.get("uploadedFrom")
         abs_amt = abs(amount)
         txn_id = str(t.get("id") or _uid_for(t))
-
-        debit_line = {
-            "id": f"{i}-debit",
-            "txnId": txn_id,
-            "date": date,
-            "memo": memo,
-            "account": account if amount >= 0 else source,
-            "type": "Debit",
-            "amount": abs_amt,
-            "uploadedAt": uploaded_at,
-            "uploadedFrom": uploaded_from,
-        }
-        credit_line = {
-            "id": f"{i}-credit",
-            "txnId": txn_id,
-            "date": date,
-            "memo": memo,
-            "account": account if amount < 0 else source,
-            "type": "Credit",
-            "amount": abs_amt,
-            "uploadedAt": uploaded_at,
-            "uploadedFrom": uploaded_from,
-        }
+        debit_line = {"id": f"{i}-debit", "txnId": txn_id, "date": date, "memo": memo, "account": account if amount >= 0 else source, "type": "Debit", "amount": abs_amt, "uploadedAt": uploaded_at, "uploadedFrom": uploaded_from}
+        credit_line = {"id": f"{i}-credit", "txnId": txn_id, "date": date, "memo": memo, "account": account if amount < 0 else source, "type": "Credit", "amount": abs_amt, "uploadedAt": uploaded_at, "uploadedFrom": uploaded_from}
         lines.append(debit_line)
         lines.append(credit_line)
-
     return {"ok": True, "entries": lines}

@@ -67,6 +67,7 @@ def _decrypt_to_str(enc: Dict[str, Any]) -> str:
 from utils.clean_vendor_name import clean_vendor_name
 from utils.classify_transaction import finalize_classification, record_learning
 from utils.display_amount import compute_display_amount
+from utils.transfer_pairing import pair_on_ingest
 
 def _server_allowed_accounts() -> List[str]:
     import json
@@ -110,18 +111,6 @@ def _mmddyyyy(iso_date: str) -> str:
     except Exception:
         return iso_date
 
-@router.get("/status")
-def status():
-    env = (os.getenv("PLAID_ENV") or "sandbox").lower()
-    return {
-        "ok": True,
-        "configured": bool(os.getenv("PLAID_CLIENT_ID") and os.getenv("PLAID_SECRET")),
-        "env": env,
-        "redirectUriSet": bool(os.getenv("PLAID_REDIRECT_URI")),
-        "webhookSet": bool(os.getenv("PLAID_WEBHOOK_URL")),
-        "encryptionReady": _enc_ready(),
-    }
-
 def _plaid_client():
     from plaid.api import plaid_api
     from plaid import Configuration, ApiClient
@@ -138,6 +127,11 @@ def _plaid_client():
         raise HTTPException(status_code=503, detail="Plaid not configured yet")
     return plaid_api.PlaidApi(ApiClient(cfg))
 
+@router.get("/status")
+def status():
+    env = (os.getenv("PLAID_ENV") or "sandbox").lower()
+    return {"ok": True, "configured": bool(os.getenv("PLAID_CLIENT_ID") and os.getenv("PLAID_SECRET")), "env": env, "redirectUriSet": bool(os.getenv("PLAID_REDIRECT_URI")), "webhookSet": bool(os.getenv("PLAID_WEBHOOK_URL")), "encryptionReady": _enc_ready()}
+
 @router.post("/create-link-token")
 def create_link_token(user: Dict[str, Any] = Depends(require_auth)):
     from plaid.model.products import Products
@@ -146,20 +140,7 @@ def create_link_token(user: Dict[str, Any] = Depends(require_auth)):
     from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
     client = _plaid_client()
     uid = str(user.get("uid") or "")
-    kwargs: Dict[str, Any] = dict(
-        products=[Products("transactions")],
-        client_name="LumiLedger",
-        country_codes=[CountryCode("US")],
-        language="en",
-        user=LinkTokenCreateRequestUser(client_user_id=uid),
-    )
-    webhook = os.getenv("PLAID_WEBHOOK_URL") or ""
-    if webhook:
-        kwargs["webhook"] = webhook
-    redirect_uri = os.getenv("PLAID_REDIRECT_URI") or ""
-    if redirect_uri:
-        kwargs["redirect_uri"] = redirect_uri
-    req = LinkTokenCreateRequest(**kwargs)
+    req = LinkTokenCreateRequest(products=[Products("transactions")], client_name="LumiLedger", country_codes=[CountryCode("US")], language="en", user=LinkTokenCreateRequestUser(client_user_id=uid), webhook=os.getenv("PLAID_WEBHOOK_URL") or None, redirect_uri=os.getenv("PLAID_REDIRECT_URI") or None)
     resp = client.link_token_create(req).to_dict()
     return {"ok": True, "link_token": resp.get("link_token")}
 
@@ -177,15 +158,15 @@ def exchange_public_token(payload: Dict[str, Any] = Body(...), user: Dict[str, A
         raise HTTPException(status_code=502, detail="plaid exchange failed")
     db = _db()
     uid = str(user.get("uid") or "")
-    doc_data = {"item_id": item_id, "institution": str((payload.get("institution") or {}).get("name") or payload.get("institution_name") or ""), "createdAt": fa_firestore.SERVER_TIMESTAMP, "updatedAt": fa_firestore.SERVER_TIMESTAMP}
+    doc = {"item_id": item_id, "institution": str((payload.get("institution") or {}).get("name") or payload.get("institution_name") or ""), "createdAt": fa_firestore.SERVER_TIMESTAMP, "updatedAt": fa_firestore.SERVER_TIMESTAMP}
     if _enc_ready():
         try:
-            doc_data["access_token_enc"] = _encrypt_str(access_token)
+            doc["access_token_enc"] = _encrypt_str(access_token)
         except Exception:
-            doc_data["access_token"] = access_token
+            doc["access_token"] = access_token
     else:
-        doc_data["access_token"] = access_token
-    db.collection("users").document(uid).collection("plaid_items").document(item_id).set(doc_data, merge=True)
+        doc["access_token"] = access_token
+    db.collection("users").document(uid).collection("plaid_items").document(item_id).set(doc, merge=True)
     return {"ok": True, "item_id": item_id}
 
 def _resolve_access_token(rec: Dict[str, Any]) -> str:
@@ -214,8 +195,10 @@ def sync_transactions(user: Dict[str, Any] = Depends(require_auth)):
     uref = db.collection("users").document(uid)
     items = list(uref.collection("plaid_items").stream())
     if not items:
-        return {"ok": True, "synced": 0}
+        return {"ok": True, "synced": 0, "modified": 0, "removed": 0}
     total_added = 0
+    total_modified = 0
+    total_removed = 0
     allowed = _server_allowed_accounts()
     for d in items:
         rec = d.to_dict() or {}
@@ -235,9 +218,13 @@ def sync_transactions(user: Dict[str, Any] = Depends(require_auth)):
             mask = str(a.get("mask") or "")
             acct_map[acc_id] = f"{name} ****{mask}" if mask else name
             typ = (a.get("type") or "").lower().strip()
-            acct_type_map[acc_id] = "card" if typ == "credit" else "bank"
+            if typ == "credit":
+                acct_type_map[acc_id] = "card"
+            elif typ == "loan":
+                acct_type_map[acc_id] = "loan"
+            else:
+                acct_type_map[acc_id] = "bank"
         has_more = True
-        added_count = 0
         while has_more:
             req_kwargs = {"access_token": access_token}
             if isinstance(new_cursor, str) and new_cursor:
@@ -246,12 +233,15 @@ def sync_transactions(user: Dict[str, Any] = Depends(require_auth)):
             new_cursor = resp.get("next_cursor") or new_cursor
             has_more = bool(resp.get("has_more"))
             added = resp.get("added") or []
+            modified = resp.get("modified") or []
+            removed = resp.get("removed") or []
             if added:
                 batch = db.batch()
-                tcol = uref.collection("transactions")
-                upload_id = f"plaid:{d.id}:{(new_cursor or 'init')}"
-                created = []
+                classify = db.batch()
                 for tx in added:
+                    plaid_tx_id = str(tx.get("transaction_id") or "")
+                    if not plaid_tx_id:
+                        continue
                     acc_id = str(tx.get("account_id") or "")
                     src = acct_map.get(acc_id) or "Plaid Account"
                     src_type = acct_type_map.get(acc_id, "bank")
@@ -260,30 +250,76 @@ def sync_transactions(user: Dict[str, Any] = Depends(require_auth)):
                     date = _mmddyyyy(str(tx.get("date") or ""))
                     date_key = date.replace("/", "")
                     disp = compute_display_amount(db=db, uid=uid, amount=amount, source_type=src_type, source=src, date=date, date_key=date_key)
-                    docref = tcol.document()
-                    batch.set(docref, {"date": date, "dateKey": date_key, "memo": memo, "amount": amount, "displayAmount": disp, "account": "", "source": src, "sourceType": src_type, "uploadId": upload_id, "fileName": "Plaid", "createdAt": fa_firestore.SERVER_TIMESTAMP})
-                    created.append({"id": docref.id, "memo": memo, "amount": amount, "source": src})
-                batch.commit()
-                if created:
-                    batch2 = db.batch()
-                    for it in created:
-                        vendor_key = clean_vendor_name(it["memo"]).lower()
-                        account, via = finalize_classification(db=db, uid=uid, vendor_key=vendor_key, memo=it["memo"], amount=float(it["amount"] or 0.0), source=str(it["source"] or ""), allowed_accounts=allowed)
-                        record_learning(db=db, vendor_key=vendor_key, account=account, uid=uid)
-                        try:
-                            batch2.update(tcol.document(it["id"]), {"account": account, "classificationSource": via})
-                        except Exception:
-                            pass
-                    try:
-                        batch2.commit()
-                    except Exception:
-                        pass
-                added_count += len(added)
+                    doc_id = f"plaid:{d.id}:{plaid_tx_id}"
+                    docref = uref.collection("transactions").document(doc_id)
+                    batch.set(docref, {"plaidTxId": plaid_tx_id, "plaidAccountId": acc_id, "itemId": d.id, "date": date, "dateKey": date_key, "memo": memo, "amount": amount, "displayAmount": disp, "account": "", "source": src, "sourceType": src_type, "uploadId": f"plaid:{d.id}", "fileName": "Plaid", "createdAt": fa_firestore.SERVER_TIMESTAMP, "updatedAt": fa_firestore.SERVER_TIMESTAMP}, merge=True)
+                    vendor_key = clean_vendor_name(memo).lower()
+                    account, via = finalize_classification(db=db, uid=uid, vendor_key=vendor_key, memo=memo, amount=amount, source=src, allowed_accounts=allowed)
+                    record_learning(db=db, vendor_key=vendor_key, account=account, uid=uid)
+                    classify.set(docref, {"account": account, "classificationSource": via}, merge=True)
+                try:
+                    batch.commit()
+                    classify.commit()
+                except Exception:
+                    pass
+                try:
+                    for tx in added:
+                        plaid_tx_id = str(tx.get("transaction_id") or "")
+                        if plaid_tx_id:
+                            pair_on_ingest(db, uid, f"plaid:{d.id}:{plaid_tx_id}")
+                except Exception:
+                    pass
+                total_added += len(added)
+            if modified:
+                batch = db.batch()
+                classify = db.batch()
+                for tx in modified:
+                    plaid_tx_id = str(tx.get("transaction_id") or "")
+                    if not plaid_tx_id:
+                        continue
+                    acc_id = str(tx.get("account_id") or "")
+                    src = acct_map.get(acc_id) or "Plaid Account"
+                    src_type = acct_type_map.get(acc_id, "bank")
+                    memo = str(tx.get("name") or tx.get("merchant_name") or tx.get("authorized_description") or tx.get("original_description") or "").strip()
+                    amount = float(tx.get("amount") or 0.0)
+                    date = _mmddyyyy(str(tx.get("date") or ""))
+                    date_key = date.replace("/", "")
+                    disp = compute_display_amount(db=db, uid=uid, amount=amount, source_type=src_type, source=src, date=date, date_key=date_key)
+                    doc_id = f"plaid:{d.id}:{plaid_tx_id}"
+                    docref = uref.collection("transactions").document(doc_id)
+                    batch.set(docref, {"plaidTxId": plaid_tx_id, "plaidAccountId": acc_id, "itemId": d.id, "date": date, "dateKey": date_key, "memo": memo, "amount": amount, "displayAmount": disp, "source": src, "sourceType": src_type, "updatedAt": fa_firestore.SERVER_TIMESTAMP}, merge=True)
+                    vendor_key = clean_vendor_name(memo).lower()
+                    account, via = finalize_classification(db=db, uid=uid, vendor_key=vendor_key, memo=memo, amount=amount, source=src, allowed_accounts=allowed)
+                    record_learning(db=db, vendor_key=vendor_key, account=account, uid=uid)
+                    classify.set(docref, {"account": account, "classificationSource": via}, merge=True)
+                try:
+                    batch.commit()
+                    classify.commit()
+                except Exception:
+                    pass
+                try:
+                    for tx in modified:
+                        plaid_tx_id = str(tx.get("transaction_id") or "")
+                        if plaid_tx_id:
+                            pair_on_ingest(db, uid, f"plaid:{d.id}:{plaid_tx_id}")
+                except Exception:
+                    pass
+                total_modified += len(modified)
+            if removed:
+                batch = db.batch()
+                for r in removed:
+                    rid = str(r.get("transaction_id") or "")
+                    if not rid:
+                        continue
+                    doc_id = f"plaid:{d.id}:{rid}"
+                    batch.delete(uref.collection("transactions").document(doc_id))
+                try:
+                    batch.commit()
+                except Exception:
+                    pass
+                total_removed += len(removed)
         uref.collection("plaid_items").document(d.id).set({"cursor": new_cursor, "updatedAt": fa_firestore.SERVER_TIMESTAMP}, merge=True)
-        if added_count:
-            uref.collection("plaid_syncs").document().set({"itemId": d.id, "institution": rec.get("institution") or "", "transactionCount": int(added_count), "createdAt": fa_firestore.SERVER_TIMESTAMP})
-            total_added += int(added_count)
-    return {"ok": True, "synced": int(total_added)}
+    return {"ok": True, "synced": int(total_added), "modified": int(total_modified), "removed": int(total_removed)}
 
 @router.post("/clear-item-transactions")
 def clear_item_transactions(payload: Dict[str, Any] = Body(...), user: Dict[str, Any] = Depends(require_auth)):
@@ -293,9 +329,7 @@ def clear_item_transactions(payload: Dict[str, Any] = Body(...), user: Dict[str,
     if not item_id:
         raise HTTPException(status_code=400, detail="missing item_id")
     uref = db.collection("users").document(uid)
-    start = f"plaid:{item_id}:"
-    end = f"plaid:{item_id}:\uf8ff"
-    q = uref.collection("transactions").where("uploadId", ">=", start).where("uploadId", "<=", end)
+    q = uref.collection("transactions").where("uploadId", "==", f"plaid:{item_id}")
     docs = list(q.stream())
     deleted = 0
     while docs:
@@ -316,9 +350,7 @@ def clear_all_linked_transactions(user: Dict[str, Any] = Depends(require_auth)):
     db = _db()
     uid = str(user.get("uid") or "")
     uref = db.collection("users").document(uid)
-    start = "plaid:"
-    end = "plaid:\uf8ff"
-    q = uref.collection("transactions").where("uploadId", ">=", start).where("uploadId", "<=", end)
+    q = uref.collection("transactions").where("uploadId", ">=", "plaid:").where("uploadId", "<=", "plaid:\uf8ff")
     docs = list(q.stream())
     deleted = 0
     while docs:
@@ -334,40 +366,30 @@ def clear_all_linked_transactions(user: Dict[str, Any] = Depends(require_auth)):
         docs = docs[450:]
     return {"ok": True, "deleted": int(deleted)}
 
-@router.post("/disconnect")
-def disconnect_item(payload: Dict[str, Any] = Body(...), user: Dict[str, Any] = Depends(require_auth)):
-    from plaid.model.item_remove_request import ItemRemoveRequest
-    client = _plaid_client()
+@router.post("/dedupe")
+def dedupe_plaid(user: Dict[str, Any] = Depends(require_auth)):
     db = _db()
     uid = str(user.get("uid") or "")
-    item_id = str(payload.get("item_id") or "").strip()
-    delete_tx = bool(payload.get("deleteTransactions") or False)
-    if not item_id:
-        raise HTTPException(status_code=400, detail="missing item_id")
     uref = db.collection("users").document(uid)
-    pref = uref.collection("plaid_items").document(item_id)
-    snap = pref.get()
-    if not snap.exists:
-        return {"ok": True, "removed": False}
-    rec = snap.to_dict() or {}
-    try:
-        client.item_remove(ItemRemoveRequest(access_token=_resolve_access_token(rec)))
-    except Exception:
-        pass
-    pref.delete()
-    if delete_tx:
-        start = f"plaid:{item_id}:"
-        end = f"plaid:{item_id}:\uf8ff"
-        q = uref.collection("transactions").where("uploadId", ">=", start).where("uploadId", "<=", end)
-        docs = list(q.stream())
-        while docs:
-            batch = db.batch()
-            chunk = docs[:450]
-            for dref in chunk:
-                batch.delete(dref.reference)
+    tcol = uref.collection("transactions")
+    snaps = list(tcol.stream())
+    by_txid: Dict[str, List[Any]] = {}
+    for s in snaps:
+        rec = s.to_dict() or {}
+        txid = str(rec.get("plaidTxId") or "")
+        if not txid:
+            continue
+        by_txid.setdefault(txid, []).append(s)
+    deleted = 0
+    for txid, group in by_txid.items():
+        if len(group) <= 1:
+            continue
+        group.sort(key=lambda s: (s.update_time, s.create_time))
+        keep = group[-1]
+        for s in group[:-1]:
             try:
-                batch.commit()
+                s.reference.delete()
+                deleted += 1
             except Exception:
-                break
-            docs = docs[450:]
-    return {"ok": True, "removed": True, "deletedTransactions": bool(delete_tx)}
+                pass
+    return {"ok": True, "deleted": int(deleted)}
