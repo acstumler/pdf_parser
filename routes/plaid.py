@@ -96,6 +96,7 @@ def _server_allowed_accounts() -> List[str]:
         "6200 - Advertising & Promotion","6210 - Social Media & Digital Ads",
         "6220 - Meals & Entertainment","6230 - Client Gifts",
         "6300 - Software Subscriptions","6310 - Bank Fees","6320 - Dues & Licenses","6330 - Postage & Delivery",
+        "6340 - Interest Expense",
         "6400 - Legal Fees","6410 - Accounting & Bookkeeping","6420 - Consulting Fees","6430 - Tax Prep & Advisory",
         "6500 - Travel - Airfare","6510 - Travel - Lodging","6520 - Travel - Meals","6530 - Travel - Other (Taxis, Parking)",
         "8000 - State Income Tax","8010 - Franchise Tax","8020 - Local Business Taxes","8030 - Estimated Tax Payments",
@@ -332,7 +333,7 @@ def sync_transactions(user: Dict[str, Any] = Depends(require_auth)):
                 batch = db.batch()
                 for r in removed:
                     rid = str(r.get("transaction_id") or "")
-                    if not rid: 
+                    if not rid:
                         continue
                     doc_id = f"plaid:{d.id}:{rid}"
                     batch.delete(uref.collection("transactions").document(doc_id))
