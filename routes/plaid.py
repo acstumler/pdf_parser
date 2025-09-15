@@ -130,7 +130,69 @@ def _plaid_client():
 @router.get("/status")
 def status():
     env = (os.getenv("PLAID_ENV") or "sandbox").lower()
-    return {"ok": True, "configured": bool(os.getenv("PLAID_CLIENT_ID") and os.getenv("PLAID_SECRET")), "env": env, "redirectUriSet": bool(os.getenv("PLAID_REDIRECT_URI")), "webhookSet": bool(os.getenv("PLAID_WEBHOOK_URL")), "encryptionReady": _enc_ready()}
+    return {
+        "ok": True,
+        "configured": bool(os.getenv("PLAID_CLIENT_ID") and os.getenv("PLAID_SECRET")),
+        "env": env,
+        "redirectUriSet": bool(os.getenv("PLAID_REDIRECT_URI")),
+        "webhookSet": bool(os.getenv("PLAID_WEBHOOK_URL")),
+        "encryptionReady": _enc_ready(),
+    }
+
+@router.post("/create-link-token")
+def create_link_token(user: Dict[str, Any] = Depends(require_auth)):
+    from plaid.model.products import Products
+    from plaid.model.country_code import CountryCode
+    from plaid.model.link_token_create_request import LinkTokenCreateRequest
+    from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
+    client = _plaid_client()
+    uid = str(user.get("uid") or "")
+    kwargs: Dict[str, Any] = dict(
+        products=[Products("transactions")],
+        client_name="LumiLedger",
+        country_codes=[CountryCode("US")],
+        language="en",
+        user=LinkTokenCreateRequestUser(client_user_id=uid),
+    )
+    webhook = os.getenv("PLAID_WEBHOOK_URL") or ""
+    if webhook:
+        kwargs["webhook"] = webhook
+    redirect_uri = os.getenv("PLAID_REDIRECT_URI") or ""
+    if redirect_uri:
+        kwargs["redirect_uri"] = redirect_uri
+    req = LinkTokenCreateRequest(**kwargs)
+    resp = client.link_token_create(req).to_dict()
+    return {"ok": True, "link_token": resp.get("link_token")}
+
+@router.post("/exchange-public-token")
+def exchange_public_token(payload: Dict[str, Any] = Body(...), user: Dict[str, Any] = Depends(require_auth)):
+    from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
+    client = _plaid_client()
+    public_token = str(payload.get("public_token") or "")
+    if not public_token:
+        raise HTTPException(status_code=400, detail="missing public_token")
+    exchange = client.item_public_token_exchange(ItemPublicTokenExchangeRequest(public_token=public_token)).to_dict()
+    access_token = exchange.get("access_token") or ""
+    item_id = exchange.get("item_id") or ""
+    if not access_token or not item_id:
+        raise HTTPException(status_code=502, detail="plaid exchange failed")
+    db = _db()
+    uid = str(user.get("uid") or "")
+    doc = {
+        "item_id": item_id,
+        "institution": str((payload.get("institution") or {}).get("name") or payload.get("institution_name") or ""),
+        "createdAt": fa_firestore.SERVER_TIMESTAMP,
+        "updatedAt": fa_firestore.SERVER_TIMESTAMP,
+    }
+    if _enc_ready():
+        try:
+            doc["access_token_enc"] = _encrypt_str(access_token)
+        except Exception:
+            doc["access_token"] = access_token
+    else:
+        doc["access_token"] = access_token
+    db.collection("users").document(uid).collection("plaid_items").document(item_id).set(doc, merge=True)
+    return {"ok": True, "item_id": item_id}
 
 @router.get("/items")
 def list_items(user: Dict[str, Any] = Depends(require_auth)):
@@ -139,8 +201,189 @@ def list_items(user: Dict[str, Any] = Depends(require_auth)):
     items = []
     for d in db.collection("users").document(uid).collection("plaid_items").stream():
         rec = d.to_dict() or {}
-        items.append({"item_id": d.id, "institution": rec.get("institution") or "", "createdAt": rec.get("createdAt"), "updatedAt": rec.get("updatedAt")})
+        items.append({
+            "item_id": d.id,
+            "institution": rec.get("institution") or "",
+            "createdAt": rec.get("createdAt"),
+            "updatedAt": rec.get("updatedAt"),
+        })
     return {"ok": True, "items": items}
+
+@router.post("/sync")
+def sync_transactions(user: Dict[str, Any] = Depends(require_auth)):
+    from plaid.model.accounts_get_request import AccountsGetRequest
+    from plaid.model.transactions_sync_request import TransactionsSyncRequest
+    client = _plaid_client()
+    db = _db()
+    uid = str(user.get("uid") or "")
+    uref = db.collection("users").document(uid)
+    items = list(uref.collection("plaid_items").stream())
+    if not items:
+        return {"ok": True, "synced": 0, "modified": 0, "removed": 0}
+    total_added = 0
+    total_modified = 0
+    total_removed = 0
+    allowed = _server_allowed_accounts()
+    for d in items:
+        rec = d.to_dict() or {}
+        try:
+            enc = rec.get("access_token_enc")
+            access_token = _decrypt_to_str(enc) if enc else str(rec.get("access_token") or "")
+        except Exception:
+            continue
+        if not access_token:
+            continue
+        new_cursor = rec.get("cursor") or None
+        accounts = client.accounts_get(AccountsGetRequest(access_token=access_token)).to_dict()
+        acct_map: Dict[str, str] = {}
+        acct_type_map: Dict[str, str] = {}
+        for a in accounts.get("accounts") or []:
+            acc_id = str(a.get("account_id") or "")
+            name = str(a.get("name") or a.get("official_name") or "Account")
+            mask = str(a.get("mask") or "")
+            acct_map[acc_id] = f"{name} ****{mask}" if mask else name
+            typ = (a.get("type") or "").lower().strip()
+            if typ == "credit":
+                acct_type_map[acc_id] = "card"
+            elif typ == "loan":
+                acct_type_map[acc_id] = "loan"
+            else:
+                acct_type_map[acc_id] = "bank"
+        has_more = True
+        while has_more:
+            req_kwargs = {"access_token": access_token}
+            if isinstance(new_cursor, str) and new_cursor:
+                req_kwargs["cursor"] = new_cursor
+            resp = client.transactions_sync(TransactionsSyncRequest(**req_kwargs)).to_dict()
+            new_cursor = resp.get("next_cursor") or new_cursor
+            has_more = bool(resp.get("has_more"))
+            added = resp.get("added") or []
+            modified = resp.get("modified") or []
+            removed = resp.get("removed") or []
+            if added:
+                batch = db.batch()
+                classify = db.batch()
+                for tx in added:
+                    plaid_tx_id = str(tx.get("transaction_id") or "")
+                    if not plaid_tx_id:
+                        continue
+                    acc_id = str(tx.get("account_id") or "")
+                    src = acct_map.get(acc_id) or "Plaid Account"
+                    src_type = acct_type_map.get(acc_id, "bank")
+                    memo = str(tx.get("name") or tx.get("merchant_name") or tx.get("authorized_description") or tx.get("original_description") or "").strip()
+                    amount = float(tx.get("amount") or 0.0)
+                    date = _mmddyyyy(str(tx.get("date") or ""))
+                    date_key = date.replace("/", "")
+                    disp = compute_display_amount(db=db, uid=uid, amount=amount, source_type=src_type, source=src, date=date, date_key=date_key)
+                    doc_id = f"plaid:{d.id}:{plaid_tx_id}"
+                    docref = uref.collection("transactions").document(doc_id)
+                    batch.set(docref, {"plaidTxId": plaid_tx_id, "plaidAccountId": acc_id, "itemId": d.id, "date": date, "dateKey": date_key, "memo": memo, "amount": amount, "displayAmount": disp, "account": "", "source": src, "sourceType": src_type, "uploadId": f"plaid:{d.id}", "fileName": "Plaid", "createdAt": fa_firestore.SERVER_TIMESTAMP, "updatedAt": fa_firestore.SERVER_TIMESTAMP}, merge=True)
+                    vendor_key = clean_vendor_name(memo).lower()
+                    account, via = finalize_classification(db=db, uid=uid, vendor_key=vendor_key, memo=memo, amount=amount, source=src, allowed_accounts=allowed)
+                    record_learning(db=db, vendor_key=vendor_key, account=account, uid=uid)
+                    classify.set(docref, {"account": account, "classificationSource": via}, merge=True)
+                try:
+                    batch.commit(); classify.commit()
+                except Exception:
+                    pass
+                try:
+                    for tx in added:
+                        plaid_tx_id = str(tx.get("transaction_id") or "")
+                        if plaid_tx_id:
+                            pair_on_ingest(db, uid, f"plaid:{d.id}:{plaid_tx_id}")
+                except Exception:
+                    pass
+                total_added += len(added)
+            if modified:
+                batch = db.batch()
+                classify = db.batch()
+                for tx in modified:
+                    plaid_tx_id = str(tx.get("transaction_id") or "")
+                    if not plaid_tx_id:
+                        continue
+                    acc_id = str(tx.get("account_id") or "")
+                    src = acct_map.get(acc_id) or "Plaid Account"
+                    src_type = acct_type_map.get(acc_id, "bank")
+                    memo = str(tx.get("name") or tx.get("merchant_name") or tx.get("authorized_description") or tx.get("original_description") or "").strip()
+                    amount = float(tx.get("amount") or 0.0)
+                    date = _mmddyyyy(str(tx.get("date") or ""))
+                    date_key = date.replace("/", "")
+                    disp = compute_display_amount(db=db, uid=uid, amount=amount, source_type=src_type, source=src, date=date, date_key=date_key)
+                    doc_id = f"plaid:{d.id}:{plaid_tx_id}"
+                    docref = uref.collection("transactions").document(doc_id)
+                    batch.set(docref, {"plaidTxId": plaid_tx_id, "plaidAccountId": acc_id, "itemId": d.id, "date": date, "dateKey": date_key, "memo": memo, "amount": amount, "displayAmount": disp, "source": src, "sourceType": src_type, "updatedAt": fa_firestore.SERVER_TIMESTAMP}, merge=True)
+                    vendor_key = clean_vendor_name(memo).lower()
+                    account, via = finalize_classification(db=db, uid=uid, vendor_key=vendor_key, memo=memo, amount=amount, source=src, allowed_accounts=allowed)
+                    record_learning(db=db, vendor_key=vendor_key, account=account, uid=uid)
+                    classify.set(docref, {"account": account, "classificationSource": via}, merge=True)
+                try:
+                    batch.commit(); classify.commit()
+                except Exception:
+                    pass
+                try:
+                    for tx in modified:
+                        plaid_tx_id = str(tx.get("transaction_id") or "")
+                        if plaid_tx_id:
+                            pair_on_ingest(db, uid, f"plaid:{d.id}:{plaid_tx_id}")
+                except Exception:
+                    pass
+                total_modified += len(modified)
+            if removed:
+                batch = db.batch()
+                for r in removed:
+                    rid = str(r.get("transaction_id") or "")
+                    if not rid: 
+                        continue
+                    doc_id = f"plaid:{d.id}:{rid}"
+                    batch.delete(uref.collection("transactions").document(doc_id))
+                try:
+                    batch.commit()
+                except Exception:
+                    pass
+                total_removed += len(removed)
+        uref.collection("plaid_items").document(d.id).set({"cursor": new_cursor, "updatedAt": fa_firestore.SERVER_TIMESTAMP}, merge=True)
+    return {"ok": True, "synced": int(total_added), "modified": int(total_modified), "removed": int(total_removed)}
+
+@router.post("/clear-item-transactions")
+def clear_item_transactions(payload: Dict[str, Any] = Body(...), user: Dict[str, Any] = Depends(require_auth)):
+    db = _db()
+    uid = str(user.get("uid") or "")
+    item_id = str(payload.get("item_id") or "").strip()
+    if not item_id:
+        raise HTTPException(status_code=400, detail="missing item_id")
+    uref = db.collection("users").document(uid)
+    docs = list(uref.collection("transactions").where("itemId", "==", item_id).stream())
+    start = f"plaid:{item_id}"; end = f"plaid:{item_id}:\uf8ff"
+    docs += list(uref.collection("transactions").where("uploadId", ">=", start).where("uploadId", "<=", end).stream())
+    seen, uniq = set(), []
+    for d in docs:
+        if d.id in seen: continue
+        seen.add(d.id); uniq.append(d)
+    deleted = 0
+    while uniq:
+        batch = db.batch()
+        chunk = uniq[:450]
+        for d in chunk: batch.delete(d.reference)
+        try: batch.commit(); deleted += len(chunk)
+        except Exception: break
+        uniq = uniq[450:]
+    return {"ok": True, "deleted": int(deleted)}
+
+@router.post("/clear-all-linked-transactions")
+def clear_all_linked_transactions(user: Dict[str, Any] = Depends(require_auth)):
+    db = _db()
+    uid = str(user.get("uid") or "")
+    uref = db.collection("users").document(uid)
+    docs = list(uref.collection("transactions").where("uploadId", ">=", "plaid:").where("uploadId", "<=", "plaid:\uf8ff").stream())
+    deleted = 0
+    while docs:
+        batch = db.batch()
+        chunk = docs[:450]
+        for d in chunk: batch.delete(d.reference)
+        try: batch.commit(); deleted += len(chunk)
+        except Exception: break
+        docs = docs[450:]
+    return {"ok": True, "deleted": int(deleted)}
 
 @router.post("/disconnect")
 def disconnect_item(payload: Dict[str, Any] = Body(...), user: Dict[str, Any] = Depends(require_auth)):
@@ -152,78 +395,64 @@ def disconnect_item(payload: Dict[str, Any] = Body(...), user: Dict[str, Any] = 
     delete_tx = bool(payload.get("deleteTransactions") or False)
     if not item_id_in:
         raise HTTPException(status_code=400, detail="missing item_id")
-
     uref = db.collection("users").document(uid)
-    # Resolve the item by doc id OR by 'item_id' field
     pref = uref.collection("plaid_items").document(item_id_in)
     snap = pref.get()
-    targets: List[fa_firestore.DocumentSnapshot] = []
-    if snap.exists:
-        targets = [snap]
-    else:
-        q = uref.collection("plaid_items").where("item_id", "==", item_id_in)
-        targets = list(q.stream())
-
+    targets: List[fa_firestore.DocumentSnapshot] = [snap] if snap.exists else list(uref.collection("plaid_items").where("item_id","==",item_id_in).stream())
     if not targets:
         return {"ok": True, "removed": False, "deletedTransactions": False}
-
-    removed_any = False
-    deleted_tx_total = 0
-
+    removed_any = False; deleted_tx_total = 0
     for s in targets:
-        rec = s.to_dict() or {}
-        doc_id = s.id
+        rec = s.to_dict() or {}; doc_id = s.id
         try:
-            tok = None
-            if "access_token_enc" in rec:
-                tok = _decrypt_to_str(rec["access_token_enc"])
-            else:
-                tok = rec.get("access_token") or ""
+            tok = _decrypt_to_str(rec["access_token_enc"]) if "access_token_enc" in rec else rec.get("access_token") or ""
             if tok:
-                try:
-                    client.item_remove(ItemRemoveRequest(access_token=tok))
-                    removed_any = True
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        try:
-            s.reference.delete()
-        except Exception:
-            pass
-
+                try: client.item_remove(ItemRemoveRequest(access_token=tok)); removed_any = True
+                except Exception: pass
+        except Exception: pass
+        try: s.reference.delete()
+        except Exception: pass
         if delete_tx:
-            # Delete by current scheme: itemId == doc_id
-            q1 = uref.collection("transactions").where("itemId", "==", doc_id)
+            q1 = uref.collection("transactions").where("itemId","==",doc_id)
             docs = list(q1.stream())
-            # Sweep legacy rows keyed by uploadId "plaid:<doc_id>"
-            start = f"plaid:{doc_id}"
-            end = f"plaid:{doc_id}:\uf8ff"
-            q2 = uref.collection("transactions").where("uploadId", ">=", start).where("uploadId", "<=", end)
-            docs += list(q2.stream())
-
-            # Deduplicate references
-            seen = set()
-            uniq = []
+            start=f"plaid:{doc_id}"; end=f"plaid:{doc_id}:\uf8ff"
+            docs += list(uref.collection("transactions").where("uploadId",">=",start).where("uploadId","<=",end).stream())
+            seen=set(); uniq=[]
             for d in docs:
-                if d.id in seen: 
-                    continue
-                seen.add(d.id)
-                uniq.append(d)
-
+                if d.id in seen: continue
+                seen.add(d.id); uniq.append(d)
             while uniq:
                 batch = db.batch()
                 chunk = uniq[:450]
-                for d in chunk:
-                    batch.delete(d.reference)
-                try:
-                    batch.commit()
-                    deleted_tx_total += len(chunk)
-                except Exception:
-                    break
+                for d in chunk: batch.delete(d.reference)
+                try: batch.commit(); deleted_tx_total += len(chunk)
+                except Exception: break
                 uniq = uniq[450:]
-
     return {"ok": True, "removed": bool(removed_any), "deletedTransactions": bool(delete_tx), "deletedCount": int(deleted_tx_total)}
 
-# The rest of your sync/exchange/create-link-token and clear endpoints remain as in your current file.
+@router.post("/dedupe")
+def dedupe_plaid(user: Dict[str, Any] = Depends(require_auth)):
+    db = _db()
+    uid = str(user.get("uid") or "")
+    uref = db.collection("users").document(uid)
+    tcol = uref.collection("transactions")
+    snaps = list(tcol.stream())
+    by_txid: Dict[str, List[Any]] = {}
+    for s in snaps:
+        rec = s.to_dict() or {}
+        txid = str(rec.get("plaidTxId") or "")
+        if not txid:
+            continue
+        by_txid.setdefault(txid, []).append(s)
+    deleted = 0
+    for txid, group in by_txid.items():
+        if len(group) <= 1:
+            continue
+        group.sort(key=lambda s: (s.update_time, s.create_time))
+        keep = group[-1]
+        for s in group[:-1]:
+            try:
+                s.reference.delete(); deleted += 1
+            except Exception:
+                pass
+    return {"ok": True, "deleted": int(deleted)}
