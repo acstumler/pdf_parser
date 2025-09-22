@@ -1,8 +1,10 @@
 from typing import List, Dict, Any
 from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Query, Body, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from datetime import datetime, timezone
-import os, json
+import os, json, uuid, urllib.parse
+import httpx
 from universal_parser import extract_transactions_from_bytes
 import firebase_admin
 from firebase_admin import auth as fb_auth, credentials
@@ -132,6 +134,17 @@ def _server_allowed_accounts() -> List[str]:
         "7090 - Uncategorized Expense",
     ]
 
+def _square_cfg():
+    env = os.environ.get("SQUARE_ENV","sandbox").lower()
+    base = "https://connect.squareupsandbox.com" if env != "production" else "https://connect.squareup.com"
+    app_id = os.environ.get("SQUARE_APPLICATION_ID","").strip()
+    secret = os.environ.get("SQUARE_APPLICATION_SECRET","").strip()
+    redirect_uri = os.environ.get("SQUARE_REDIRECT_URL","").strip()
+    return env, base, app_id, secret, redirect_uri
+
+def _frontend_return_default():
+    return os.environ.get("FRONTEND_RETURN_URL","https://lumiledger.vercel.app/account-settings")
+
 @app.get("/")
 def root():
     return {"ok": True}
@@ -147,6 +160,120 @@ def health():
 @app.get("/cors-origins")
 def cors_origins():
     return {"allow_origins": _ALLOWED_ORIGINS, "allow_origin_regex": _ALLOW_ORIGIN_REGEX}
+
+@app.get("/square/authorize-url")
+def square_authorize_url(authorization: str = Header(None), return_to: str | None = Query(None)):
+    decoded = _verify_and_decode(authorization)
+    db = _db()
+    uid = decoded["uid"]
+    env, base, app_id, secret, redirect_uri = _square_cfg()
+    if not app_id or not secret or not redirect_uri:
+        raise HTTPException(status_code=500, detail="Square not configured")
+    state = str(uuid.uuid4())
+    db.collection("oauth_states").document(state).set({"uid": uid, "returnTo": return_to or _frontend_return_default(), "createdAt": fa_firestore.SERVER_TIMESTAMP})
+    params = {"client_id": app_id, "scope": "MERCHANT_PROFILE_READ", "state": state, "redirect_uri": redirect_uri}
+    if env == "production":
+        params["session"] = "false"
+    url = f"{base}/oauth2/authorize?{urllib.parse.urlencode(params)}"
+    return {"url": url}
+
+@app.get("/square/callback")
+async def square_callback(code: str = Query(""), state: str = Query("")):
+    if not code or not state:
+        return HTMLResponse("<p>Missing code or state.</p>", status_code=400)
+    db = _db()
+    sref = db.collection("oauth_states").document(state)
+    sdoc = sref.get()
+    if not sdoc.exists:
+        return HTMLResponse("<p>State not recognized.</p>", status_code=400)
+    meta = sdoc.to_dict() or {}
+    uid = str(meta.get("uid") or "")
+    return_to = str(meta.get("returnTo") or _frontend_return_default())
+    env, base, app_id, secret, redirect_uri = _square_cfg()
+    access_token = ""
+    refresh_token = ""
+    merchant_id = ""
+    expires_at = ""
+    merchant_name = ""
+    primary_location_name = ""
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            token_res = await client.post(f"{base}/oauth2/token", json={"client_id": app_id, "client_secret": secret, "code": code, "grant_type": "authorization_code", "redirect_uri": redirect_uri})
+            tj = token_res.json()
+            access_token = str(tj.get("access_token") or "")
+            refresh_token = str(tj.get("refresh_token") or "")
+            merchant_id = str(tj.get("merchant_id") or "")
+            expires_at = str(tj.get("expires_at") or "")
+            if access_token:
+                hdrs = {"Authorization": f"Bearer {access_token}"}
+                try:
+                    if merchant_id:
+                        mres = await client.get(f"{base}/v2/merchants/{merchant_id}", headers=hdrs)
+                        mj = mres.json()
+                        merchant_name = str(((mj.get("merchant") or {}).get("business_name")) or "")
+                except Exception:
+                    pass
+                try:
+                    lres = await client.get(f"{base}/v2/locations", headers=hdrs)
+                    lj = lres.json()
+                    locs = lj.get("locations") or []
+                    if isinstance(locs, list) and locs:
+                        primary_location_name = str(locs[0].get("name") or locs[0].get("id") or "")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    if uid and access_token:
+        db.collection("users").document(uid).collection("integrations").document("square").set({
+            "merchantId": merchant_id,
+            "merchantName": merchant_name,
+            "primaryLocation": primary_location_name,
+            "accessToken": access_token,
+            "refreshToken": refresh_token,
+            "expiresAt": expires_at,
+            "environment": env,
+            "updatedAt": fa_firestore.SERVER_TIMESTAMP,
+        }, merge=True)
+    try:
+        sref.delete()
+    except Exception:
+        pass
+    return HTMLResponse(f'<html><body><script>location.href="{return_to}";</script>Connected to Square.</body></html>', status_code=200)
+
+@app.get("/square/status")
+def square_status(authorization: str = Header(None)):
+    decoded = _verify_and_decode(authorization)
+    db = _db()
+    uid = decoded["uid"]
+    ref = db.collection("users").document(uid).collection("integrations").document("square")
+    doc = ref.get()
+    if not doc.exists:
+        return {"connected": False}
+    d = doc.to_dict() or {}
+    return {"connected": bool(d.get("accessToken")), "merchantId": d.get("merchantId",""), "merchantName": d.get("merchantName",""), "locationName": d.get("primaryLocation",""), "environment": d.get("environment","")}
+
+@app.post("/square/disconnect")
+async def square_disconnect(authorization: str = Header(None)):
+    decoded = _verify_and_decode(authorization)
+    db = _db()
+    uid = decoded["uid"]
+    ref = db.collection("users").document(uid).collection("integrations").document("square")
+    doc = ref.get()
+    if not doc.exists:
+        return {"ok": True, "revoked": False}
+    d = doc.to_dict() or {}
+    access_token = str(d.get("accessToken") or "")
+    env, base, app_id, secret, _ = _square_cfg()
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            await client.post(f"{base}/oauth2/revoke", json={"client_id": app_id, "client_secret": secret, "access_token": access_token})
+    except Exception:
+        pass
+    try:
+        ref.delete()
+    except Exception:
+        pass
+    return {"ok": True, "revoked": True}
 
 @app.post("/parse-and-persist")
 async def parse_and_persist(authorization: str = Header(None), file: UploadFile = File(...), autoClassify: bool = Query(True)):
