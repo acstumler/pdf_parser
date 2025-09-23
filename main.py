@@ -1,17 +1,14 @@
-from typing import List, Dict, Any
-from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Query, Body, Response
+from typing import List, Dict, Any, Optional
+from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Query, Body, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
 from datetime import datetime, timezone
-import os, json, uuid, urllib.parse
-import httpx
+import os, json, uuid, hmac, hashlib, base64, httpx
+
 from universal_parser import extract_transactions_from_bytes
 import firebase_admin
 from firebase_admin import auth as fb_auth, credentials
 from firebase_admin import firestore as fa_firestore
-from utils.classify_transaction import finalize_classification, record_learning
-from utils.clean_vendor_name import clean_vendor_name
-from utils.display_amount import compute_display_amount
+
 from routes import ai_router, journal_router, vendors_router, plaid_router, demo_router
 from routes.coa import router as coa_router
 from routes.transactions_detail import router as transactions_detail_router
@@ -23,12 +20,24 @@ def _load_allowed_origins() -> List[str]:
     raw = os.environ.get("ALLOWED_ORIGINS", "").strip()
     if raw:
         return [o.strip() for o in raw.split(",") if o.strip()]
-    return ["https://lighthouse-iq.vercel.app","http://localhost:5173","http://localhost:3000"]
+    return [
+        "https://lumiledger.vercel.app",
+        "https://lighthouse-iq.vercel.app",
+        "http://localhost:5173",
+        "http://localhost:3000",
+    ]
 
 _ALLOWED_ORIGINS = _load_allowed_origins()
 _ALLOW_ORIGIN_REGEX = r"https://.*\.vercel\.app"
 
-app.add_middleware(CORSMiddleware, allow_origins=_ALLOWED_ORIGINS, allow_origin_regex=_ALLOW_ORIGIN_REGEX, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_origin_regex=_ALLOW_ORIGIN_REGEX,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(ai_router)
 app.include_router(journal_router)
@@ -51,7 +60,7 @@ def _db():
     _init_firebase_once()
     return fa_firestore.client()
 
-def _verify_and_decode(authorization: str | None) -> dict:
+def _verify_and_decode(authorization: Optional[str]) -> dict:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Missing token")
     token = authorization.split(" ", 1)[1].strip()
@@ -64,18 +73,22 @@ def _verify_and_decode(authorization: str | None) -> dict:
         raise HTTPException(status_code=401, detail="Invalid token")
     return decoded
 
-def _require_recent_login(decoded: dict, max_age_sec: int = 180):
-    auth_time = decoded.get("auth_time")
-    if not isinstance(auth_time, (int, float)):
-        raise HTTPException(status_code=401, detail="Recent login required")
-    now = int(datetime.now(timezone.utc).timestamp())
-    if now - int(auth_time) > max_age_sec:
-        raise HTTPException(status_code=401, detail="Recent login required")
+@app.get("/")
+def root():
+    return {"ok": True}
+
+@app.head("/")
+def root_head():
+    return Response(status_code=200)
+
+@app.get("/health")
+def health():
+    return {"ok": True}
 
 def _parse_date_key(s: str) -> str:
     if not s:
         return ""
-    for fmt in ("%m/%d/%Y","%Y-%m-%d"):
+    for fmt in ("%m/%d/%Y", "%Y-%m-%d"):
         try:
             dt = datetime.strptime(s, fmt)
             return dt.strftime("%Y%m%d")
@@ -86,7 +99,14 @@ def _parse_date_key(s: str) -> str:
 def _touch_user_profile(db: Any, uid: str, email: str | None):
     try:
         uref = db.collection("users").document(uid)
-        uref.set({"email": (email or "").lower(),"createdAt": fa_firestore.SERVER_TIMESTAMP,"updatedAt": fa_firestore.SERVER_TIMESTAMP}, merge=True)
+        uref.set(
+            {
+                "email": (email or "").lower(),
+                "createdAt": fa_firestore.SERVER_TIMESTAMP,
+                "updatedAt": fa_firestore.SERVER_TIMESTAMP,
+            },
+            merge=True,
+        )
     except Exception:
         pass
 
@@ -134,149 +154,12 @@ def _server_allowed_accounts() -> List[str]:
         "7090 - Uncategorized Expense",
     ]
 
-def _square_cfg():
-    env = os.environ.get("SQUARE_ENV","sandbox").lower()
-    base = "https://connect.squareupsandbox.com" if env != "production" else "https://connect.squareup.com"
-    app_id = os.environ.get("SQUARE_APPLICATION_ID","").strip()
-    secret = os.environ.get("SQUARE_APPLICATION_SECRET","").strip()
-    redirect_uri = os.environ.get("SQUARE_REDIRECT_URL","").strip()
-    return env, base, app_id, secret, redirect_uri
-
-def _frontend_return_default():
-    return os.environ.get("FRONTEND_RETURN_URL","https://lumiledger.vercel.app/account-settings")
-
-@app.get("/")
-def root():
-    return {"ok": True}
-
-@app.head("/")
-def root_head():
-    return Response(status_code=200)
-
-@app.get("/health")
-def health():
-    return {"ok": True}
-
-@app.get("/cors-origins")
-def cors_origins():
-    return {"allow_origins": _ALLOWED_ORIGINS, "allow_origin_regex": _ALLOW_ORIGIN_REGEX}
-
-@app.get("/square/authorize-url")
-def square_authorize_url(authorization: str = Header(None), return_to: str | None = Query(None)):
-    decoded = _verify_and_decode(authorization)
-    db = _db()
-    uid = decoded["uid"]
-    env, base, app_id, secret, redirect_uri = _square_cfg()
-    if not app_id or not secret or not redirect_uri:
-        raise HTTPException(status_code=500, detail="Square not configured")
-    state = str(uuid.uuid4())
-    db.collection("oauth_states").document(state).set({"uid": uid, "returnTo": return_to or _frontend_return_default(), "createdAt": fa_firestore.SERVER_TIMESTAMP})
-    params = {"client_id": app_id, "scope": "MERCHANT_PROFILE_READ", "state": state, "redirect_uri": redirect_uri}
-    if env == "production":
-        params["session"] = "false"
-    url = f"{base}/oauth2/authorize?{urllib.parse.urlencode(params)}"
-    return {"url": url}
-
-@app.get("/square/callback")
-async def square_callback(code: str = Query(""), state: str = Query("")):
-    if not code or not state:
-        return HTMLResponse("<p>Missing code or state.</p>", status_code=400)
-    db = _db()
-    sref = db.collection("oauth_states").document(state)
-    sdoc = sref.get()
-    if not sdoc.exists:
-        return HTMLResponse("<p>State not recognized.</p>", status_code=400)
-    meta = sdoc.to_dict() or {}
-    uid = str(meta.get("uid") or "")
-    return_to = str(meta.get("returnTo") or _frontend_return_default())
-    env, base, app_id, secret, redirect_uri = _square_cfg()
-    access_token = ""
-    refresh_token = ""
-    merchant_id = ""
-    expires_at = ""
-    merchant_name = ""
-    primary_location_name = ""
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            token_res = await client.post(f"{base}/oauth2/token", json={"client_id": app_id, "client_secret": secret, "code": code, "grant_type": "authorization_code", "redirect_uri": redirect_uri})
-            tj = token_res.json()
-            access_token = str(tj.get("access_token") or "")
-            refresh_token = str(tj.get("refresh_token") or "")
-            merchant_id = str(tj.get("merchant_id") or "")
-            expires_at = str(tj.get("expires_at") or "")
-            if access_token:
-                hdrs = {"Authorization": f"Bearer {access_token}"}
-                try:
-                    if merchant_id:
-                        mres = await client.get(f"{base}/v2/merchants/{merchant_id}", headers=hdrs)
-                        mj = mres.json()
-                        merchant_name = str(((mj.get("merchant") or {}).get("business_name")) or "")
-                except Exception:
-                    pass
-                try:
-                    lres = await client.get(f"{base}/v2/locations", headers=hdrs)
-                    lj = lres.json()
-                    locs = lj.get("locations") or []
-                    if isinstance(locs, list) and locs:
-                        primary_location_name = str(locs[0].get("name") or locs[0].get("id") or "")
-                except Exception:
-                    pass
-    except Exception:
-        pass
-    if uid and access_token:
-        db.collection("users").document(uid).collection("integrations").document("square").set({
-            "merchantId": merchant_id,
-            "merchantName": merchant_name,
-            "primaryLocation": primary_location_name,
-            "accessToken": access_token,
-            "refreshToken": refresh_token,
-            "expiresAt": expires_at,
-            "environment": env,
-            "updatedAt": fa_firestore.SERVER_TIMESTAMP,
-        }, merge=True)
-    try:
-        sref.delete()
-    except Exception:
-        pass
-    return HTMLResponse(f'<html><body><script>location.href="{return_to}";</script>Connected to Square.</body></html>', status_code=200)
-
-@app.get("/square/status")
-def square_status(authorization: str = Header(None)):
-    decoded = _verify_and_decode(authorization)
-    db = _db()
-    uid = decoded["uid"]
-    ref = db.collection("users").document(uid).collection("integrations").document("square")
-    doc = ref.get()
-    if not doc.exists:
-        return {"connected": False}
-    d = doc.to_dict() or {}
-    return {"connected": bool(d.get("accessToken")), "merchantId": d.get("merchantId",""), "merchantName": d.get("merchantName",""), "locationName": d.get("primaryLocation",""), "environment": d.get("environment","")}
-
-@app.post("/square/disconnect")
-async def square_disconnect(authorization: str = Header(None)):
-    decoded = _verify_and_decode(authorization)
-    db = _db()
-    uid = decoded["uid"]
-    ref = db.collection("users").document(uid).collection("integrations").document("square")
-    doc = ref.get()
-    if not doc.exists:
-        return {"ok": True, "revoked": False}
-    d = doc.to_dict() or {}
-    access_token = str(d.get("accessToken") or "")
-    env, base, app_id, secret, _ = _square_cfg()
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            await client.post(f"{base}/oauth2/revoke", json={"client_id": app_id, "client_secret": secret, "access_token": access_token})
-    except Exception:
-        pass
-    try:
-        ref.delete()
-    except Exception:
-        pass
-    return {"ok": True, "revoked": True}
-
 @app.post("/parse-and-persist")
-async def parse_and_persist(authorization: str = Header(None), file: UploadFile = File(...), autoClassify: bool = Query(True)):
+async def parse_and_persist(
+    authorization: str = Header(None),
+    file: UploadFile = File(...),
+    autoClassify: bool = Query(True),
+):
     decoded = _verify_and_decode(authorization)
     db = _db()
     _touch_user_profile(db, decoded["uid"], decoded.get("email"))
@@ -290,7 +173,17 @@ async def parse_and_persist(authorization: str = Header(None), file: UploadFile 
     upload_id = upref.id
     created: List[Dict[str, Any]] = []
     batch = db.batch()
-    batch.set(upref, {"fileName": file.filename,"source": source,"transactionCount": int(len(rows or [])),"status": "ready","createdAt": fa_firestore.SERVER_TIMESTAMP,"updatedAt": fa_firestore.SERVER_TIMESTAMP})
+    batch.set(
+        upref,
+        {
+            "fileName": file.filename,
+            "source": source,
+            "transactionCount": int(len(rows or [])),
+            "status": "ready",
+            "createdAt": fa_firestore.SERVER_TIMESTAMP,
+            "updatedAt": fa_firestore.SERVER_TIMESTAMP,
+        },
+    )
     tcol = uref.collection("transactions")
     for r in rows or []:
         memo = str(r.get("memo") or r.get("memo_raw") or r.get("memo_clean") or "")
@@ -300,12 +193,29 @@ async def parse_and_persist(authorization: str = Header(None), file: UploadFile 
         src = str(r.get("source") or source)
         date_key = _parse_date_key(date)
         row_src_type = str(r.get("sourceType") or src_type_default or "bank")
-        disp = compute_display_amount(db=db, uid=uid, amount=amount, source_type=row_src_type, source=src, date=date, date_key=date_key)
+        disp = compute_display_amount(db=db, uid=uid, amount=amount, source_type=row_src_type, source=src, date=date, date_key=date_key)  # noqa: F821
         docref = tcol.document()
-        batch.set(docref, {"date": date,"dateKey": date_key,"memo": memo,"amount": amount,"displayAmount": disp,"account": acct,"source": src,"sourceType": row_src_type,"uploadId": upload_id,"fileName": file.filename,"createdAt": fa_firestore.SERVER_TIMESTAMP})
+        batch.set(
+            docref,
+            {
+                "date": date,
+                "dateKey": date_key,
+                "memo": memo,
+                "amount": amount,
+                "displayAmount": disp,
+                "account": acct,
+                "source": src,
+                "sourceType": row_src_type,
+                "uploadId": upload_id,
+                "fileName": file.filename,
+                "createdAt": fa_firestore.SERVER_TIMESTAMP,
+            },
+        )
         created.append({"id": docref.id, "memo": memo, "amount": amount, "source": src})
     batch.commit()
     if autoClassify and created:
+        from utils.clean_vendor_name import clean_vendor_name  # noqa: E402
+        from utils.classify_transaction import finalize_classification, record_learning  # noqa: E402
         allowed = _server_allowed_accounts()
         batch2 = db.batch()
         for it in created:
@@ -320,10 +230,22 @@ async def parse_and_persist(authorization: str = Header(None), file: UploadFile 
             batch2.commit()
         except Exception:
             pass
-    return {"ok": True,"uploadId": upload_id,"fileName": file.filename,"source": source,"transactionCount": len(rows or []),"autoClassified": bool(autoClassify)}
+    return {
+        "ok": True,
+        "uploadId": upload_id,
+        "fileName": file.filename,
+        "source": source,
+        "transactionCount": len(rows or []),
+        "autoClassified": bool(autoClassify),
+    }
 
 @app.post("/replace-upload")
-async def replace_upload(authorization: str = Header(None), uploadId: str = Query(..., min_length=1), file: UploadFile = File(...), autoClassify: bool = Query(True)):
+async def replace_upload(
+    authorization: str = Header(None),
+    uploadId: str = Query(..., min_length=1),
+    file: UploadFile = File(...),
+    autoClassify: bool = Query(True),
+):
     decoded = _verify_and_decode(authorization)
     db = _db()
     _touch_user_profile(db, decoded["uid"], decoded.get("email"))
@@ -348,13 +270,39 @@ async def replace_upload(authorization: str = Header(None), uploadId: str = Quer
         src = str(r.get("source") or source)
         date_key = _parse_date_key(date)
         row_src_type = str(r.get("sourceType") or src_type_default or "bank")
-        disp = compute_display_amount(db=db, uid=uid, amount=amount, source_type=row_src_type, source=src, date=date, date_key=date_key)
+        disp = compute_display_amount(db=db, uid=uid, amount=amount, source_type=row_src_type, source=src, date=date, date_key=date_key)  # noqa: F821
         docref = tcol.document()
-        batch.set(docref, {"date": date,"dateKey": date_key,"memo": memo,"amount": amount,"displayAmount": disp,"account": acct,"source": src,"sourceType": row_src_type,"uploadId": uploadId,"fileName": file.filename,"createdAt": fa_firestore.SERVER_TIMESTAMP})
+        batch.set(
+            docref,
+            {
+                "date": date,
+                "dateKey": date_key,
+                "memo": memo,
+                "amount": amount,
+                "displayAmount": disp,
+                "account": acct,
+                "source": src,
+                "sourceType": row_src_type,
+                "uploadId": uploadId,
+                "fileName": file.filename,
+                "createdAt": fa_firestore.SERVER_TIMESTAMP,
+            },
+        )
         created.append({"id": docref.id, "memo": memo, "amount": amount, "source": src})
-    batch.update(upref, {"fileName": file.filename,"source": source,"transactionCount": int(len(rows or [])),"status": "ready","updatedAt": fa_firestore.SERVER_TIMESTAMP})
+    batch.update(
+        upref,
+        {
+            "fileName": file.filename,
+            "source": source,
+            "transactionCount": int(len(rows or [])),
+            "status": "ready",
+            "updatedAt": fa_firestore.SERVER_TIMESTAMP,
+        },
+    )
     batch.commit()
     if autoClassify and created:
+        from utils.clean_vendor_name import clean_vendor_name  # noqa: E402
+        from utils.classify_transaction import finalize_classification, record_learning  # noqa: E402
         allowed = _server_allowed_accounts()
         batch2 = db.batch()
         for it in created:
@@ -369,34 +317,158 @@ async def replace_upload(authorization: str = Header(None), uploadId: str = Quer
             batch2.commit()
         except Exception:
             pass
-    return {"ok": True,"uploadId": uploadId,"fileName": file.filename,"source": source,"transactionCount": len(rows or []),"autoClassified": bool(autoClassify)}
+    return {
+        "ok": True,
+        "uploadId": uploadId,
+        "fileName": file.filename,
+        "source": source,
+        "transactionCount": len(rows or []),
+        "autoClassified": bool(autoClassify),
+    }
 
-@app.get("/transactions")
-def list_transactions(authorization: str = Header(None), limit: int = Query(1000, ge=1, le=5000)):
-    decoded = _verify_and_decode(authorization)
-    db = _db()
-    _touch_user_profile(db, decoded["uid"], decoded.get("email"))
-    uid = decoded["uid"]
-    uref = db.collection("users").document(uid)
-    q = uref.collection("transactions").order_by("createdAt", direction=fa_firestore.Query.DESCENDING).limit(limit)
-    out = []
-    for d in q.stream():
-        doc = d.to_dict() or {}
-        doc["id"] = d.id
-        out.append(doc)
-    return {"ok": True, "transactions": out}
+def _sq_base() -> str:
+    env = (os.environ.get("SQUARE_ENV", "sandbox") or "").lower()
+    return "https://connect.squareupsandbox.com" if env != "production" else "https://connect.squareup.com"
 
-@app.get("/uploads")
-def list_uploads(authorization: str = Header(None), limit: int = Query(500, ge=1, le=2000)):
+def _sq_headers() -> Dict[str, str]:
+    tok = os.environ.get("SQUARE_ACCESS_TOKEN", "").strip()
+    if not tok:
+        raise HTTPException(status_code=500, detail="Square access token missing")
+    return {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
+
+def _sq_return_url(uid: str) -> str:
+    base = os.environ.get("SQUARE_CHECKOUT_RETURN_URL", "").strip() or "https://lumiledger.vercel.app/billing/thanks"
+    sep = "&" if "?" in base else "?"
+    return f"{base}{sep}u={uid}"
+
+async def _get_plan_variation_id(plan_name: str, frequency: str) -> str:
+    frequency = frequency.strip().lower()
+    target = "monthly" if "month" in frequency else "annual"
+    url = f"{_sq_base()}/v2/catalog/list?types=SUBSCRIPTION_PLAN"
+    async with httpx.AsyncClient(timeout=30) as client:
+        res = await client.get(url, headers=_sq_headers())
+        if res.status_code >= 300:
+            raise HTTPException(status_code=502, detail=f"Square catalog error: {res.text}")
+        payload = res.json() or {}
+        objs = payload.get("objects") or []
+        for obj in objs:
+            if obj.get("type") == "SUBSCRIPTION_PLAN":
+                name = ((obj.get("subscription_plan_data") or {}).get("name") or "").strip().lower()
+                if name == plan_name.strip().lower():
+                    variations = (obj.get("subscription_plan_data") or {}).get("subscription_plan_variations") or []
+                    for v in variations:
+                        vname = (v.get("name") or "").strip().lower()
+                        vid = v.get("id") or v.get("variation_id") or v.get("subscription_plan_variation_id")
+                        if vid and (target in vname or vname == target):
+                            return str(vid)
+    raise HTTPException(status_code=404, detail=f"Plan variation not found for {plan_name} / {frequency}")
+
+@app.post("/billing/checkout-link")
+async def create_checkout_link(
+    request: Request,
+    authorization: str = Header(None),
+    body: Dict[str, Any] = Body(...),
+):
     decoded = _verify_and_decode(authorization)
-    db = _db()
-    _touch_user_profile(db, decoded["uid"], decoded.get("email"))
     uid = decoded["uid"]
-    uref = db.collection("users").document(uid)
-    q = uref.collection("uploads").order_by("createdAt", direction=fa_firestore.Query.DESCENDING).limit(limit)
-    out = []
-    for d in q.stream():
-        doc = d.to_dict() or {}
-        doc["id"] = d.id
-        out.append(doc)
-    return {"ok": True, "uploads": out}
+    plan = str(body.get("plan") or "Starter")
+    frequency = str(body.get("frequency") or "monthly")
+    buyer_email = str(body.get("buyerEmail") or decoded.get("email") or "")
+    variation_id = await _get_plan_variation_id(plan, frequency)
+    payload = {
+        "idempotency_key": str(uuid.uuid4()),
+        "subscription_plan_id": variation_id,
+        "checkout_options": {"redirect_url": _sq_return_url(uid)},
+    }
+    if buyer_email:
+        payload["pre_populate_buyer_email"] = buyer_email
+    url = f"{_sq_base()}/v2/online-checkout/payment-links"
+    async with httpx.AsyncClient(timeout=30) as client:
+        res = await client.post(url, headers=_sq_headers(), json=payload)
+        if res.status_code >= 300:
+            raise HTTPException(status_code=502, detail=f"Create payment link failed: {res.text}")
+        data = res.json() or {}
+        link = ((data.get("payment_link") or {}).get("url")) or ""
+        if not link:
+            raise HTTPException(status_code=502, detail="Square did not return a payment link")
+    db = _db()
+    db.collection("users").document(uid).collection("billing").document("intent").set(
+        {"plan": plan, "frequency": frequency, "variationId": variation_id, "createdAt": fa_firestore.SERVER_TIMESTAMP},
+        merge=True,
+    )
+    return {"url": link}
+
+def _secure_compare(a: str, b: str) -> bool:
+    if len(a) != len(b):
+        return False
+    r = 0
+    for x, y in zip(a.encode(), b.encode()):
+        r |= x ^ y
+    return r == 0
+
+def _compute_webhook_signature(signature_key: str, notification_url: str, raw_body: bytes) -> str:
+    mac = hmac.new(signature_key.encode("utf-8"), (notification_url + raw_body.decode("utf-8")).encode("utf-8"), hashlib.sha256)
+    return base64.b64encode(mac.digest()).decode("utf-8")
+
+@app.post("/webhooks/square")
+async def square_webhook(request: Request):
+    signature_key = os.environ.get("SQUARE_WEBHOOK_SIGNATURE_KEY", "").strip()
+    if not signature_key:
+        return Response(status_code=500, content="Missing signature key")
+    raw = await request.body()
+    notif_url = str(request.url)
+    provided = request.headers.get("x-square-hmacsha256-signature") or request.headers.get("x-square-signature") or ""
+    expected = _compute_webhook_signature(signature_key, notif_url, raw)
+    if not _secure_compare(provided or "", expected or ""):
+        return Response(status_code=401, content="Invalid signature")
+    evt = {}
+    try:
+        evt = json.loads(raw.decode("utf-8"))
+    except Exception:
+        pass
+    etype = str(evt.get("type") or "")
+    data = evt.get("data") or {}
+    obj = data.get("object") or {}
+    db = _db()
+    if etype.startswith("subscription."):
+        sub = obj.get("subscription") or {}
+        status = (sub.get("status") or "").lower()
+        customer_id = sub.get("customer_id") or ""
+        plan_variation_id = sub.get("plan_variation_id") or sub.get("plan_id") or ""
+        email = ""
+        if customer_id:
+            try:
+                async with httpx.AsyncClient(timeout=20) as client:
+                    c = await client.get(f"{_sq_base()}/v2/customers/{customer_id}", headers=_sq_headers())
+                    cj = c.json() if c.status_code < 300 else {}
+                    email = (cj.get("customer") or {}).get("email_address") or ""
+            except Exception:
+                pass
+        if email:
+            q = db.collection("users").where("email", "==", email.lower()).limit(1).stream()
+            target_uid = None
+            for d in q:
+                target_uid = d.id
+                break
+            if target_uid:
+                db.collection("users").document(target_uid).collection("billing").document("status").set(
+                    {
+                        "status": status,
+                        "squareSubscriptionId": sub.get("id") or "",
+                        "planVariationId": plan_variation_id,
+                        "updatedAt": fa_firestore.SERVER_TIMESTAMP,
+                    },
+                    merge=True,
+                )
+    return {"ok": True}
+
+@app.get("/billing/status")
+def billing_status(authorization: str = Header(None)):
+    decoded = _verify_and_decode(authorization)
+    uid = decoded["uid"]
+    db = _db()
+    ref = db.collection("users").document(uid).collection("billing").document("status")
+    doc = ref.get()
+    if not doc.exists:
+        return {"status": "none"}
+    return doc.to_dict() or {"status": "none"}
