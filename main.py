@@ -21,6 +21,7 @@ def _load_allowed_origins() -> List[str]:
     if raw:
         return [o.strip() for o in raw.split(",") if o.strip()]
     return [
+        "https://lumiledger.com",
         "https://lumiledger.vercel.app",
         "https://lighthouse-iq.vercel.app",
         "http://localhost:5173",
@@ -374,7 +375,27 @@ async def create_checkout_link(
     plan = str(body.get("plan") or "Starter")
     frequency = str(body.get("frequency") or "monthly")
     buyer_email = str(body.get("buyerEmail") or decoded.get("email") or "")
+    first_name = str(body.get("firstName") or "").strip()
+    last_name = str(body.get("lastName") or "").strip()
+    business_name = str(body.get("businessName") or "").strip()
+
     variation_id = await _get_plan_variation_id(plan, frequency)
+
+    db = _db()
+    try:
+        db.collection("users").document(uid).set(
+            {
+                "email": (buyer_email or "").lower(),
+                "firstName": first_name,
+                "lastName": last_name,
+                "businessName": business_name,
+                "updatedAt": fa_firestore.SERVER_TIMESTAMP,
+            },
+            merge=True,
+        )
+    except Exception:
+        pass
+
     payload = {
         "idempotency_key": str(uuid.uuid4()),
         "subscription_plan_id": variation_id,
@@ -382,6 +403,7 @@ async def create_checkout_link(
     }
     if buyer_email:
         payload["pre_populate_buyer_email"] = buyer_email
+
     url = f"{_sq_base()}/v2/online-checkout/payment-links"
     async with httpx.AsyncClient(timeout=30) as client:
         res = await client.post(url, headers=_sq_headers(), json=payload)
@@ -391,11 +413,20 @@ async def create_checkout_link(
         link = ((data.get("payment_link") or {}).get("url")) or ""
         if not link:
             raise HTTPException(status_code=502, detail="Square did not return a payment link")
-    db = _db()
-    db.collection("users").document(uid).collection("billing").document("intent").set(
-        {"plan": plan, "frequency": frequency, "variationId": variation_id, "createdAt": fa_firestore.SERVER_TIMESTAMP},
-        merge=True,
-    )
+
+    try:
+        db.collection("users").document(uid).collection("billing").document("intent").set(
+            {
+                "plan": plan,
+                "frequency": frequency,
+                "variationId": variation_id,
+                "createdAt": fa_firestore.SERVER_TIMESTAMP,
+            },
+            merge=True,
+        )
+    except Exception:
+        pass
+
     return {"url": link}
 
 def _secure_compare(a: str, b: str) -> bool:
