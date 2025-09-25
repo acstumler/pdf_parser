@@ -13,6 +13,7 @@ from routes import ai_router, journal_router, vendors_router, plaid_router, demo
 from routes.coa import router as coa_router
 from routes.transactions_detail import router as transactions_detail_router
 from routes.journal_detail import router as journal_detail_router
+from utils.display_amount import compute_display_amount
 
 app = FastAPI()
 
@@ -155,6 +156,63 @@ def _server_allowed_accounts() -> List[str]:
         "7090 - Uncategorized Expense",
     ]
 
+@app.get("/uploads")
+def list_uploads(authorization: str = Header(None)):
+    decoded = _verify_and_decode(authorization)
+    db = _db()
+    _touch_user_profile(db, decoded["uid"], decoded.get("email"))
+    uid = decoded["uid"]
+    uref = db.collection("users").document(uid)
+    out = []
+    for d in uref.collection("uploads").order_by("createdAt", direction=fa_firestore.Query.DESCENDING).stream():
+        rec = d.to_dict() or {}
+        rec["uploadId"] = d.id
+        out.append(rec)
+    return {"uploads": out}
+
+@app.post("/delete-upload")
+def delete_upload(authorization: str = Header(None), body: Dict[str, Any] = Body(...)):
+    decoded = _verify_and_decode(authorization)
+    db = _db()
+    _touch_user_profile(db, decoded["uid"], decoded.get("email"))
+    uid = decoded["uid"]
+    upload_id = str(body.get("uploadId") or body.get("id") or "").strip()
+    if not upload_id:
+        raise HTTPException(status_code=400, detail="Missing uploadId")
+    uref = db.collection("users").document(uid)
+    _delete_query(uref.collection("transactions").where("uploadId", "==", upload_id))
+    try:
+        uref.collection("uploads").document(upload_id).delete()
+    except Exception:
+        pass
+    return {"ok": True, "uploadId": upload_id}
+
+@app.post("/delete-all-uploads")
+def delete_all_uploads(authorization: str = Header(None)):
+    decoded = _verify_and_decode(authorization)
+    db = _db()
+    _touch_user_profile(db, decoded["uid"], decoded.get("email"))
+    uid = decoded["uid"]
+    uref = db.collection("users").document(uid)
+    _delete_query(uref.collection("transactions").where("uploadId", ">=", "").where("uploadId", "<=", "\uf8ff"))
+    _delete_query(uref.collection("uploads").where("fileName", ">=", "").where("fileName", "<=", "\uf8ff"))
+    return {"ok": True}
+
+@app.get("/transactions")
+def list_transactions(authorization: str = Header(None), limit: int = Query(5000), offset: int = Query(0)):
+    decoded = _verify_and_decode(authorization)
+    db = _db()
+    _touch_user_profile(db, decoded["uid"], decoded.get("email"))
+    uid = decoded["uid"]
+    uref = db.collection("users").document(uid)
+    snaps = list(uref.collection("transactions").order_by("dateKey").stream())
+    rows = []
+    for s in snaps[offset: offset + max(0, limit)]:
+        rec = s.to_dict() or {}
+        rec["id"] = s.id
+        rows.append(rec)
+    return {"transactions": rows}
+
 @app.post("/parse-and-persist")
 async def parse_and_persist(
     authorization: str = Header(None),
@@ -194,7 +252,7 @@ async def parse_and_persist(
         src = str(r.get("source") or source)
         date_key = _parse_date_key(date)
         row_src_type = str(r.get("sourceType") or src_type_default or "bank")
-        disp = compute_display_amount(db=db, uid=uid, amount=amount, source_type=row_src_type, source=src, date=date, date_key=date_key)  # noqa: F821
+        disp = compute_display_amount(db=db, uid=uid, amount=amount, source_type=row_src_type, source=src, date=date, date_key=date_key)
         docref = tcol.document()
         batch.set(
             docref,
@@ -215,8 +273,8 @@ async def parse_and_persist(
         created.append({"id": docref.id, "memo": memo, "amount": amount, "source": src})
     batch.commit()
     if autoClassify and created:
-        from utils.clean_vendor_name import clean_vendor_name  # noqa: E402
-        from utils.classify_transaction import finalize_classification, record_learning  # noqa: E402
+        from utils.clean_vendor_name import clean_vendor_name
+        from utils.classify_transaction import finalize_classification, record_learning
         allowed = _server_allowed_accounts()
         batch2 = db.batch()
         for it in created:
@@ -271,7 +329,7 @@ async def replace_upload(
         src = str(r.get("source") or source)
         date_key = _parse_date_key(date)
         row_src_type = str(r.get("sourceType") or src_type_default or "bank")
-        disp = compute_display_amount(db=db, uid=uid, amount=amount, source_type=row_src_type, source=src, date=date, date_key=date_key)  # noqa: F821
+        disp = compute_display_amount(db=db, uid=uid, amount=amount, source_type=row_src_type, source=src, date=date, date_key=date_key)
         docref = tcol.document()
         batch.set(
             docref,
@@ -302,8 +360,8 @@ async def replace_upload(
     )
     batch.commit()
     if autoClassify and created:
-        from utils.clean_vendor_name import clean_vendor_name  # noqa: E402
-        from utils.classify_transaction import finalize_classification, record_learning  # noqa: E402
+        from utils.clean_vendor_name import clean_vendor_name
+        from utils.classify_transaction import finalize_classification, record_learning
         allowed = _server_allowed_accounts()
         batch2 = db.batch()
         for it in created:
