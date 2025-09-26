@@ -561,3 +561,74 @@ def billing_status(authorization: str = Header(None)):
     if not doc.exists:
         return {"status": "none"}
     return doc.to_dict() or {"status": "none"}
+
+@app.post("/transactions/bulk-reclassify")
+def bulk_reclassify(authorization: str = Header(None), body: Dict[str, Any] = Body(...)):
+    decoded = _verify_and_decode(authorization)
+    db = _db()
+    uid = decoded["uid"]
+    uids = list(body.get("uids") or [])
+    account = str(body.get("account") or "").strip()
+    fps = list(body.get("fingerprints") or [])
+    if not account or (not uids and not fps):
+        raise HTTPException(status_code=400, detail="Missing input")
+    uref = db.collection("users").document(uid)
+    tcol = uref.collection("transactions")
+    updated = 0
+    if uids:
+        batch = db.batch()
+        for txid in uids:
+            try:
+                docref = tcol.document(str(txid))
+                if docref.get().exists:
+                    batch.update(docref, {"account": account, "updatedAt": fa_firestore.SERVER_TIMESTAMP})
+                    updated += 1
+            except Exception:
+                pass
+        try:
+            batch.commit()
+        except Exception:
+            pass
+    for fp in fps:
+        try:
+            date = str(fp.get("date") or "")
+            memo = str(fp.get("memo") or "")
+            amount = float(fp.get("amount") or 0.0)
+            q = tcol.where("date", "==", date).where("amount", "==", amount).where("memo", "==", memo)
+            docs = list(q.stream())
+            if docs:
+                batch2 = db.batch()
+                for d in docs:
+                    batch2.update(d.reference, {"account": account, "updatedAt": fa_firestore.SERVER_TIMESTAMP})
+                try:
+                    batch2.commit()
+                    updated += len(docs)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    return {"ok": True, "updated": int(updated)}
+
+@app.post("/vendors/train-bulk")
+def vendors_train_bulk(authorization: str = Header(None), body: Dict[str, Any] = Body(...)):
+    decoded = _verify_and_decode(authorization)
+    db = _db()
+    uid = decoded["uid"]
+    pairs = list(body.get("pairs") or [])
+    if not pairs:
+        raise HTTPException(status_code=400, detail="No pairs")
+    from utils.clean_vendor_name import clean_vendor_name
+    from utils.classify_transaction import record_learning
+    count = 0
+    for p in pairs:
+        memo = str((p or {}).get("memo") or "")
+        account = str((p or {}).get("account") or "")
+        if not memo or not account:
+            continue
+        key = clean_vendor_name(memo).lower()
+        try:
+            record_learning(db=db, vendor_key=key, account=account, uid=uid)
+            count += 1
+        except Exception:
+            pass
+    return {"ok": True, "trained": int(count)}
